@@ -274,6 +274,7 @@ double TotalLossNB(int m){
    return p;
 }
 
+// เรียงจาก "เสียมากสุด" ไป "น้อยสุด" — ใช้ใน Guardian (ต้องการลด DD เร็ว)
 int GetWorstLoss(int m, int n, ulong &outTk[], double &outPf[])
 {
    ulong  tk[]; double pf[]; int c=0;
@@ -285,7 +286,29 @@ int GetWorstLoss(int m, int n, ulong &outTk[], double &outPf[])
       double p=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
       if(p<0){ArrayResize(tk,c+1);ArrayResize(pf,c+1);tk[c]=t;pf[c]=p;c++;}
    }
+   // sort น้อยที่สุด (เสียมากสุด) → มาก
    for(int i=0;i<c-1;i++)for(int j=i+1;j<c;j++)if(pf[j]<pf[i]){double x=pf[i];pf[i]=pf[j];pf[j]=x;ulong u=tk[i];tk[i]=tk[j];tk[j]=u;}
+   int take=MathMin(n,c);
+   ArrayResize(outTk,take);ArrayResize(outPf,take);
+   for(int i=0;i<take;i++){outTk[i]=tk[i];outPf[i]=pf[i];}
+   return take;
+}
+
+// Method 3 — Net Cluster: เรียงจาก "|เสียน้อยสุด|" ก่อน → ใช้ใน DoTP
+// ทำให้ trigger ง่ายขึ้น, clear ได้บ่อยขึ้น, pipeline ไม่ติดขัด
+int GetSmallestLoss(int m, int n, ulong &outTk[], double &outPf[])
+{
+   ulong  tk[]; double pf[]; int c=0;
+   for(int i=PositionsTotal()-1;i>=0;i--){
+      ulong t=PositionGetTicket(i);
+      if(!PositionSelectByTicket(t))continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=m||PositionGetString(POSITION_SYMBOL)!=_Symbol)continue;
+      if(IsBPK(t))continue;
+      double p=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      if(p<0){ArrayResize(tk,c+1);ArrayResize(pf,c+1);tk[c]=t;pf[c]=p;c++;}
+   }
+   // sort มากที่สุด (ใกล้ 0 = เสียน้อยสุด) → น้อย
+   for(int i=0;i<c-1;i++)for(int j=i+1;j<c;j++)if(pf[j]>pf[i]){double x=pf[i];pf[i]=pf[j];pf[j]=x;ulong u=tk[i];tk[i]=tk[j];tk[j]=u;}
    int take=MathMin(n,c);
    ArrayResize(outTk,take);ArrayResize(outPf,take);
    for(int i=0;i<take;i++){outTk[i]=tk[i];outPf[i]=pf[i];}
@@ -583,12 +606,20 @@ int GetActiveDir(int m)
 }
 
 //+------------------------------------------------------------------+
-//| DoTP                                                             |
+//| DoTP — Method 3: Net Cluster Close                              |
+//|                                                                  |
+//| เรียงไม้เสียจาก "น้อยสุด" ก่อน เพื่อให้:                       |
+//|  1. trigger ง่ายขึ้น (กำไรที่ต้องการน้อยลง)                    |
+//|  2. clear ได้บ่อยขึ้น (pipeline ไม่ติดขัด)                     |
+//|  3. net = gross - loss >= req รับประกันทุกรอบ                   |
+//|                                                                  |
+//| ไม้เสียลึก (worst) จะถูกดึงออกเองเมื่อกำไรสะสมพอ             |
 //+------------------------------------------------------------------+
 void DoTP(int m, double req)
 {
    CTrade *tr = TR(m);
 
+   //--- รวบรวมไม้กำไร (non-BPK), sort มากสุด→น้อยสุด
    ulong  tkP[]; double pfP[]; int nP=0;
    for(int i=PositionsTotal()-1;i>=0;i--){
       ulong t=PositionGetTicket(i);
@@ -604,45 +635,54 @@ void DoTP(int m, double req)
       for(int j=i+1;j<nP;j++)
          if(pfP[j]>pfP[i]){double x=pfP[i];pfP[i]=pfP[j];pfP[j]=x;ulong u=tkP[i];tkP[i]=tkP[j];tkP[j]=u;}
 
+   //--- Method 3: ใช้ GetSmallestLoss — เรียงจากเสียน้อยสุดก่อน
    ulong  tkL[]; double pfL[]; int nL=0;
-   if(SelfAbs>0) nL=GetWorstLoss(m,SelfAbs,tkL,pfL);
+   if(SelfAbs>0) nL=GetSmallestLoss(m,SelfAbs,tkL,pfL);
 
    int    bestAk  = -1;
    int    bestNL  =  0;
    double bestCp  =  0;
    double bestLoss=  0;
 
+   // ดึงไม้เสียออกอย่างน้อย 1 ไม้เสมอ (ถ้ามี)
    int lTryMin = (nL>0 && SelfAbs>0) ? 1 : 0;
 
+   // วนจาก SelfAbs ลงมาถึง lTryMin — success แรก = clear มากสุดที่ทำได้
    for(int lTry=nL; lTry>=lTryMin; lTry--)
    {
       double tryLoss=0;
       for(int i=0;i<lTry;i++) tryLoss+=MathAbs(pfL[i]);
-      double grossNeed = req + tryLoss;
+
+      // net cluster condition: cp - tryLoss >= req  →  cp >= req + tryLoss
+      double netNeed = req + tryLoss;
 
       int    keep = MathMin(SKCount, nP);
       int    ak   = keep;
       double cp   = 0;
       for(int i=keep; i<nP; i++) cp+=pfP[i];
-      for(int i=keep-1; i>=0 && cp<grossNeed; i--){cp+=pfP[i]; ak--;}
+      for(int i=keep-1; i>=0 && cp<netNeed; i--){cp+=pfP[i]; ak--;}
 
-      if(cp>=grossNeed){
+      if(cp>=netNeed){
          bestAk=ak; bestNL=lTry; bestCp=cp; bestLoss=tryLoss;
-         break;
+         break; // เอา lTry สูงสุดที่ทำได้ = clear มากสุด
       }
    }
 
    if(bestAk<0){
-      PrintFormat("[TP] M%d รอ: gross=$%.2f ต้องการ=$%.2f+loss(1ไม้)=$%.2f",
+      // กำไรยังไม่พอแม้แต่ 1 ไม้เสียเล็กสุด → รอ
+      PrintFormat("[TP] M%d รอ net: gross=$%.2f req=$%.2f smallestLoss=$%.2f need=$%.2f",
                   m, GrossProfitNB(m), req,
-                  nL>0 ? MathAbs(pfL[0]) : 0.0);
+                  nL>0 ? MathAbs(pfL[0]) : 0.0,
+                  req + (nL>0 ? MathAbs(pfL[0]) : 0.0));
       return;
    }
 
+   //--- ปิดไม้กำไร (index bestAk..nP-1)
    int closedP=0;
    for(int i=bestAk; i<nP; i++)
       if(tr.PositionClose(tkP[i])) closedP++;
 
+   //--- ปิดไม้เสีย bestNL ไม้ (เล็กสุดก่อน)
    int closedL=0;
    for(int i=0; i<bestNL; i++){
       if(tr.PositionClose(tkL[i])){
@@ -651,6 +691,7 @@ void DoTP(int m, double req)
       }
    }
 
+   //--- SafeKeep: ตั้ง BE SL ให้ไม้ที่เก็บ (index 0..bestAk-1)
    for(int i=0; i<bestAk; i++){
       if(!PositionSelectByTicket(tkP[i]))continue;
       double op  = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -662,22 +703,26 @@ void DoTP(int m, double req)
       if(imp) tr.PositionModify(tkP[i],nsl,otp);
    }
 
+   //--- อัพเดต Debt
    if(m==MAGIC_1)gD1=0; else if(m==MAGIC_2)gD2=0; else gD3=0;
    gDG=MathMax(0, gDG-MathMax(0, req-bestLoss));
 
    SyncAfterTP(m);
    ScheduleReOpen(m, GetActiveDir(m));
-   PrintFormat("[TP] M%d ✓ เก็บ:%d ปิดกำไร:%d($%.2f) ดึงเสีย:%d/$%.2f net=$%.2f | D=%.2f/%.2f/%.2f G=%.2f",
-               m,bestAk,closedP,bestCp,closedL,bestLoss,bestCp-bestLoss,gD1,gD2,gD3,gDG);
+   PrintFormat("[TP] M%d ✓ net=$%.2f | เก็บ:%d กำไร:%d($%.2f) เสีย:%d($%.2f) | D=%.2f/%.2f/%.2f G=%.2f",
+               m, bestCp-bestLoss, bestAk, closedP, bestCp, closedL, bestLoss, gD1, gD2, gD3, gDG);
 }
 
+// Method 3: trigger ด้วย smallest loss — fire บ่อยขึ้น
+// gross - smallest_loss >= req  →  net >= req รับประกัน
 bool CanDoTP(int m, double req){
    double gp = GrossProfitNB(m);
    if(SelfAbs<=0) return gp>=req;
    ulong tk1[]; double pf1[];
-   int n1=GetWorstLoss(m,1,tk1,pf1);
-   double minLoss = (n1>0) ? MathAbs(pf1[0]) : 0.0;
-   return gp >= req + minLoss;
+   int n1=GetSmallestLoss(m,1,tk1,pf1); // ใช้เสียน้อยสุดเป็น threshold
+   double smallLoss = (n1>0) ? MathAbs(pf1[0]) : 0.0;
+   // net check: gross - smallestLoss >= req
+   return gp >= req + smallLoss;
 }
 
 // FIX #3 & #4: ข้าม M1/M3 เมื่อ Guardian กำลังใช้งาน magic นั้นอยู่

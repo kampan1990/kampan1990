@@ -341,6 +341,8 @@ bool CanP(int m){
    return true;
 }
 
+int HelperMagic(int vic){ return (vic==MAGIC_1)?MAGIC_3:MAGIC_1; }
+
 // ตรวจว่า Guardian กำลังใช้งาน magic นั้น (victim หรือ helper) อยู่
 bool IsGuardInvolved(int m){
    if(!UseGuard||!gG.active)return false;
@@ -348,8 +350,6 @@ bool IsGuardInvolved(int m){
    int hlp=HelperMagic(vic);
    return(m==vic||m==hlp||m==MAGIC_2);
 }
-
-int HelperMagic(int vic){ return (vic==MAGIC_1)?MAGIC_3:MAGIC_1; }
 
 bool OO(int m,int d,double lot){
    // ถ้าเป็น victim ที่ถูกหยุด (Phase 1 เท่านั้น) → ห้ามออก

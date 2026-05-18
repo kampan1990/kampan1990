@@ -141,6 +141,7 @@ input int    BPKSell   = 1;      // จำนวน Slot ไม้ SELL ที�
 input double BPKBuyTP  = 50.0;   // เป้ากำไรรวม BUY Slot ($) ก่อนปิด
 input double BPKSellTP = 50.0;   // เป้ากำไรรวม SELL Slot ($) ก่อนปิด
 input double BPKMinP   = 0.0;    // กำไรขั้นต่ำของไม้ที่จะเข้า Slot ($)
+input int    BPKBEPts  = 10;     // ระยะ BE SL ของ BPK นับจากราคาเปิด (points, 0=ที่ราคาเปิดพอดี)
 
 input group "=== Guardian System ==="
 input bool   UseGuard   = true;   // เปิดใช้ Guardian System
@@ -418,12 +419,14 @@ void SetBPKBreakeven(BPKSlot &arr[])
       double sl  = PositionGetDouble(POSITION_SL);
       double otp = PositionGetDouble(POSITION_TP);
       int    d   = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
-      double nsl = (SKBE>0)?(op+d*SKBE*_Point):op;
+      // BPKBEPts points เหนือ open สำหรับ BUY / ต่ำกว่า open สำหรับ SELL
+      // ค่า 0 = SL อยู่ที่ราคาเปิดพอดี (หักค่า spread อาจปิดขาดทุนเล็กน้อย)
+      double nsl = op + d * BPKBEPts * _Point;
       bool imp=(d==1)?(nsl>sl||sl==0):(nsl<sl||sl==0);
       if(imp){
          CTrade*tr=TR(arr[i].magic);
-         tr.PositionModify(arr[i].ticket,nsl,otp);
-         PrintFormat("[BPK] BE SL set #%I64u op=%.5f nsl=%.5f",arr[i].ticket,op,nsl);
+         if(tr.PositionModify(arr[i].ticket,nsl,otp))
+            PrintFormat("[BPK] BE SL set #%I64u op=%.5f nsl=%.5f (+%d pts)",arr[i].ticket,op,nsl,BPKBEPts);
       }
    }
 }

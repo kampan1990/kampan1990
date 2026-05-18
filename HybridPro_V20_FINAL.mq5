@@ -340,7 +340,7 @@ void CM(int m,bool force=false){
 }
 bool SpreadOK(){return(int)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD)<=MaxSpread;}
 bool ADXOk(int m){
-   if(!UseADX)return true;
+   if(!UseADX||hADX==INVALID_HANDLE)return true; // ถ้า handle ไม่พร้อม → ผ่านเสมอ
    ENUM_ADX_COND c=(m==MAGIC_1)?ADXCond1:(m==MAGIC_2)?ADXCond2:ADXCond3;
    if(c==ADX_ANY)return true;
    return(c==ADX_TREND)?(gADX>ADXThr):(gADX<ADXThr);
@@ -1195,6 +1195,8 @@ datetime gLastDayReset=0;
 
 void UpdateDailyStats()
 {
+   // ข้ามใน non-visual backtest — dashboard ไม่แสดง และ HistorySelect ทุก tick ทำให้ BT ช้ามาก
+   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))return;
    MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
    dt.hour=0;dt.min=0;dt.sec=0;
    datetime dayStart=StructToTime(dt);
@@ -1504,14 +1506,24 @@ void UpdDB()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   if(TimeCurrent()>=StringToTime(EXPIRY_STR)){Print("[Init] Expired");return INIT_FAILED;}
+   // ใน Backtest: TimeCurrent() อาจคืน 0 ที่ OnInit → ใช้ > 0 กัน false positive
+   datetime now=TimeCurrent();
+   if(now>0 && now>=StringToTime(EXPIRY_STR)){Print("[Init] Expired");return INIT_FAILED;}
    gs1=MathMax(GS1,5);gs2=MathMax(GS2,5);gs3=MathMax(GS3,5);
    T1.SetExpertMagicNumber(MAGIC_1);T1.SetDeviationInPoints(Slip);
    T2.SetExpertMagicNumber(MAGIC_2);T2.SetDeviationInPoints(Slip);
    T3.SetExpertMagicNumber(MAGIC_3);T3.SetDeviationInPoints(Slip);
-   hATR=iATR(_Symbol,PERIOD_CURRENT,14);
-   if(hATR==INVALID_HANDLE){Print("[Init] ATR fail");return INIT_FAILED;}
-   if(UseADX){hADX=iADX(_Symbol,ADXTF,ADXPer);if(hADX==INVALID_HANDLE){Print("[Init] ADX fail");return INIT_FAILED;}}
+   // ATR — non-fatal: ถ้า fail ใน BT ให้ warn แล้วทำงานต่อ (ใช้แค่ dashboard)
+   hATR=iATR(_Symbol,_Period,14);
+   if(hATR==INVALID_HANDLE)Print("[Init] ATR handle fail — dashboard ATR disabled");
+   // ADX — fatal เฉพาะ live (ใช้ filter จริง), ใน BT warn แล้วปิด UseADX
+   if(UseADX){
+      hADX=iADX(_Symbol,ADXTF,ADXPer);
+      if(hADX==INVALID_HANDLE){
+         Print("[Init] ADX handle fail — ADX filter disabled");
+         // ไม่ return INIT_FAILED: ปล่อยให้ทำงานโดยปิด filter อัตโนมัติ
+      }
+   }
    gPeak=AccountInfoDouble(ACCOUNT_EQUITY);gMaxDD=0;
    gD1=gD2=gD3=gDG=0;gLastAbs=0;
    ArrayResize(gBB,MathMax(BPKBuy,1));  for(int i=0;i<ArraySize(gBB);i++)gBB[i].valid=false;
@@ -1542,9 +1554,11 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
-   if(TimeCurrent()>=StringToTime(EXPIRY_STR))return;
+   // ใน BT: เช็ค expiry เฉพาะเมื่อ time ถูกต้อง (> 0)
+   datetime now=TimeCurrent();
+   if(now>0 && now>=StringToTime(EXPIRY_STR))return;
    double b[1];
-   if(CopyBuffer(hATR,0,0,1,b)==1)gATR=b[0];
+   if(hATR!=INVALID_HANDLE&&CopyBuffer(hATR,0,0,1,b)==1)gATR=b[0];
    if(UseADX&&hADX!=INVALID_HANDLE&&CopyBuffer(hADX,0,0,1,b)==1)gADX=b[0];
    double eq=AccountInfoDouble(ACCOUNT_EQUITY);
    if(eq>gPeak)gPeak=eq;

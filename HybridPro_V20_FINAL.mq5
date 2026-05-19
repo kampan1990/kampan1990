@@ -536,6 +536,14 @@ void ChkTrigger() {
 }
 
 //+------------------------------------------------------------------+
+//| Panel helpers                                                    |
+//+------------------------------------------------------------------+
+int GetPanelX() {
+   int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   return MathMax(5, cw - PanelX - PW_OUT);
+}
+
+//+------------------------------------------------------------------+
 //| Panel primitives                                                 |
 //+------------------------------------------------------------------+
 void Rect(string n,int x,int y,int w,int h,color bg,color brd) {
@@ -545,7 +553,7 @@ void Rect(string n,int x,int y,int w,int h,color bg,color brd) {
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
    ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);     ObjectSetInteger(0,n,OBJPROP_COLOR,brd);
    ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
-   ObjectSetInteger(0,n,OBJPROP_BACK,true);      ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);     ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
 }
 void Lbl(string n,int x,int y,string t,color c,int fs,string font="Arial Bold") {
    if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
@@ -574,40 +582,41 @@ string TFStr(ENUM_TIMEFRAMES tf) {
    }
 }
 
-// Draw 14-char position usage bar using two overlapping labels
-// Background label: "░░░░░░░░░░░░░░"  Fill label: "████..." (filled portion only)
-void DrawBar(string id, int x, int y, int cnt, int maxCnt, color acClr) {
-   string bg = "░░░░░░░░░░░░░░";
-   Lbl(PFX+id+"_PBG", x, y, bg, CB_BAR_BG, FS, "Courier New");
-   int filled = (maxCnt>0) ? MathMin(14,(int)MathRound((double)cnt/maxCnt*14.0)) : 0;
-   string fg = ""; for(int i=0;i<filled;i++) fg+="█";
-   Lbl(PFX+id+"_PFG", x, y, fg, acClr, FS, "Courier New");
+// Rectangle-based progress bar: background rect + filled rect
+void DrawBar(string id, int px, int x, int y, int cnt, int maxCnt, color acClr) {
+   int barW = 130;
+   int barH = 9;
+   Rect(PFX+id+"_PBG", px+x, y, barW, barH, CB_BAR_BG, CB_BAR_BG);
+   int fillW = (maxCnt>0) ? MathMax(1, MathMin(barW, (int)MathRound((double)cnt/maxCnt*barW))) : 0;
+   if(cnt>0 && fillW>0)
+      Rect(PFX+id+"_PFG", px+x, y, fillW, barH, acClr, acClr);
+   else
+      Rect(PFX+id+"_PFG", px+x, y, 1, barH, CB_BAR_BG, CB_BAR_BG);
 }
 
-// Draw one complete magic section
-void DrawMagicSec(string id, int sy,
+// Draw one complete magic section — px = GetPanelX() result
+void DrawMagicSec(string id, int px, int sy,
                   color acClr, color bgClr,
                   string tag, string dirTxt, color dirClr,
                   int cnt, int maxCnt, double pnl, double lotDay) {
-   int x = PanelX+3;
-   Rect(PFX+id+"_BG",  x,    sy,   PW_IN, SEC_H, bgClr,  bgClr);
-   Rect(PFX+id+"_ACC", x,    sy,   5,     SEC_H, acClr,  acClr);
-   // subtle inner top border highlight
-   Rect(PFX+id+"_HI",  x+5,  sy,   PW_IN-5, 1,   C'25,32,58', C'25,32,58');
+   int xi = px+3;
+   Rect(PFX+id+"_BG",  xi,    sy,   PW_IN, SEC_H, bgClr,  bgClr);
+   Rect(PFX+id+"_ACC", xi,    sy,   5,     SEC_H, acClr,  acClr);
+   Rect(PFX+id+"_HI",  xi+5,  sy,   PW_IN-5, 1,   C'25,32,58', C'25,32,58');
 
    int r1 = sy+8;
-   Lbl(PFX+id+"_TAG", x+14, r1, tag,    acClr,    FN);
-   Lbl(PFX+id+"_DIR", x+40, r1, dirTxt, dirClr,   FN);
-   DrawBar(id, x+124, r1, cnt, maxCnt, acClr);
-   Lbl(PFX+id+"_CNT", x+243, r1,
-       StringFormat("%2d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
+   Lbl(PFX+id+"_TAG", xi+14, r1, tag,    acClr,    FN);
+   Lbl(PFX+id+"_DIR", xi+40, r1, dirTxt, dirClr,   FN);
+   DrawBar(id, xi, 118, r1, cnt, maxCnt, acClr);
+   Lbl(PFX+id+"_CNT", xi+255, r1,
+       StringFormat("%d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
 
-   int r2 = sy+29;
-   Lbl(PFX+id+"_PNLL", x+14, r2, "PNL",                 CL_INFO, FS, "Arial");
-   Lbl(PFX+id+"_PNLV", x+40, r2, StringFormat("%+.2f $", pnl), PnlClr(pnl), FN);
-   Lbl(PFX+id+"_LOTL", x+160, r2, "Lot/Day",             CL_INFO, FXS, "Arial");
-   Lbl(PFX+id+"_LOTV", x+205, r2, StringFormat("%.2f",lotDay),  CL_CYAN, FN);
-   Lbl(PFX+id+"_LOTU", x+249, r2, "lot",                 CL_INFO, FXS, "Arial");
+   int r2 = sy+30;
+   Lbl(PFX+id+"_PNLL", xi+14, r2, "PNL",                     CL_INFO,    FS, "Arial");
+   Lbl(PFX+id+"_PNLV", xi+40, r2, StringFormat("%+.2f $", pnl), PnlClr(pnl), FN);
+   Lbl(PFX+id+"_LOTL", xi+158, r2, "Lot/Day",                 CL_INFO,    FXS, "Arial");
+   Lbl(PFX+id+"_LOTV", xi+204, r2, StringFormat("%.2f",lotDay), CL_CYAN,   FN);
+   Lbl(PFX+id+"_LOTU", xi+250, r2, "lot",                     CL_INFO,    FXS, "Arial");
 }
 
 //+------------------------------------------------------------------+
@@ -617,8 +626,8 @@ void ShowDashboard() {
    if(!ShowPanel) return;
    if(MQLInfoInteger(MQL_TESTER)&&!MQLInfoInteger(MQL_VISUAL_MODE)) return;
 
-   int x = PanelX;
-   int y = PanelY;
+   int x  = GetPanelX();
+   int y  = PanelY;
    int xi = x+3;   // inner X
 
    // ── Live data ──────────────────────────────────────────────────
@@ -665,11 +674,11 @@ void ShowDashboard() {
    else if(gADXDir==-1){ m2dir="▼ SELL"; m2clr=C'255,145,145'; }
    else                 { m2dir="■ IDLE"; m2clr=C'110,115,140'; }
 
-   DrawMagicSec("M1", sy1, CA_M1, CB_M1,
+   DrawMagicSec("M1", x, sy1, CA_M1, CB_M1,
                 "M1", "▲ BUY",  C'165,208,255', c1, MaxGrid1, p1, gDailyLot1);
-   DrawMagicSec("M2", sy2, CA_M2, CB_M2,
+   DrawMagicSec("M2", x, sy2, CA_M2, CB_M2,
                 "M2", m2dir,     m2clr,          c2, MaxGrid2, p2, gDailyLot2);
-   DrawMagicSec("M3", sy3, CA_M3, CB_M3,
+   DrawMagicSec("M3", x, sy3, CA_M3, CB_M3,
                 "M3", "▼ SELL", C'255,195,135', c3, MaxGrid3, p3, gDailyLot3);
 
    // ── Stats section ──────────────────────────────────────────────

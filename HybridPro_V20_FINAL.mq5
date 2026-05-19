@@ -12,7 +12,45 @@
 #define MAGIC_1    1111
 #define MAGIC_2    2222
 #define MAGIC_3    3333
-#define PFX        "HP_"   // object name prefix for panel
+#define PFX        "HP_"
+
+// ── Panel layout ────────────────────────────────────────────────────
+#define PW_OUT   304   // outer width  (incl. 3px borders each side)
+#define PW_IN    298   // inner content width
+#define SEC_H     52   // height of each magic section
+#define HDR_H     32   // header height
+#define STAT_H    58   // stats section height
+
+// ── Color palette ────────────────────────────────────────────────────
+#define CB_BORDER  C'42,55,95'
+#define CB_BG      C'10,12,20'
+#define CB_HDR     C'16,22,46'
+#define CB_HDR_LN  C'48,92,210'
+#define CB_M1      C'10,15,30'
+#define CB_M2      C'13,10,26'
+#define CB_M3      C'20,12,5'
+#define CB_STAT    C'12,15,26'
+#define CB_SEP     C'20,26,48'
+#define CB_SEP_HI  C'35,46,80'
+#define CB_BAR_BG  C'30,40,65'
+#define CA_M1      C'38,128,255'
+#define CA_M2      C'162,78,222'
+#define CA_M3      C'232,122,12'
+#define CL_GOLD    C'255,200,50'
+#define CL_POS     C'48,212,98'
+#define CL_NEG     C'232,62,62'
+#define CL_NEU     C'125,138,162'
+#define CL_INFO    C'105,120,150'
+#define CL_BRIGHT  C'180,200,228'
+#define CL_CYAN    C'0,198,218'
+#define CL_WHITE   C'220,228,240'
+#define CL_TIME    C'80,95,125'
+
+// ── Font sizes ────────────────────────────────────────────────────────
+#define FH  10   // header
+#define FN   9   // normal
+#define FS   8   // small
+#define FXS  7   // extra small
 
 //+------------------------------------------------------------------+
 //| Structs                                                          |
@@ -32,16 +70,16 @@ input bool   En2          = true;
 input bool   En3          = true;
 
 input group "=== Lot ==="
-input double Lot1         = 0.01;   // M1 base lot
-input double Lot2         = 0.01;   // M2 base lot
-input double Lot3         = 0.01;   // M3 base lot
-input double LotMult1     = 1.0;    // M1 lot multiplier per grid level
-input double LotMult3     = 1.0;    // M3 lot multiplier per grid level
+input double Lot1         = 0.01;
+input double Lot2         = 0.01;
+input double Lot3         = 0.01;
+input double LotMult1     = 1.0;
+input double LotMult3     = 1.0;
 
 input group "=== Grid Spacing (points) ==="
-input int    GS1          = 100;    // M1 BUY grid spacing
-input int    GS2          = 100;    // M2 grid spacing
-input int    GS3          = 100;    // M3 SELL grid spacing
+input int    GS1          = 100;
+input int    GS2          = 100;
+input int    GS3          = 100;
 
 input group "=== Grid Limits ==="
 input int    MaxGrid1     = 20;
@@ -49,9 +87,9 @@ input int    MaxGrid2     = 10;
 input int    MaxGrid3     = 20;
 
 input group "=== Loss Trigger ==="
-input double LossTrig1    = 200.0;  // M1 stop threshold ($)
-input double LossTrig3    = 200.0;  // M3 stop threshold ($)
-input int    TrigCoolSec  = 300;    // cooldown (seconds) before trigger can re-arm
+input double LossTrig1    = 200.0;
+input double LossTrig3    = 200.0;
+input int    TrigCoolSec  = 300;
 
 input group "=== ADX ==="
 input bool            UseADX  = true;
@@ -61,16 +99,16 @@ input double          ADXMin  = 20.0;
 
 input group "=== Take Profit ==="
 input bool   UseSepTP     = true;
-input double TP1          = 5.0;    // M1 separate TP ($)
-input double TP2          = 5.0;    // M2 separate TP ($)
-input double TP3          = 5.0;    // M3 separate TP ($)
+input double TP1          = 5.0;
+input double TP2          = 5.0;
+input double TP3          = 5.0;
 input bool   UseTotTP     = true;
-input double TPTot        = 15.0;   // Total (M1+M2+M3) TP ($)
+input double TPTot        = 15.0;
 input bool   UsePairTP    = true;
-input double TPPair       = 10.0;   // Pair (M1+M3) TP ($)
-input int    SelfAbs      = 1;      // Worst-loss positions absorbed per TP round
-input int    SKCount      = 1;      // SafeKeep positions after TP
-input int    SKBEPts      = 5;      // SafeKeep BE SL offset (points)
+input double TPPair       = 10.0;
+input int    SelfAbs      = 1;
+input int    SKCount      = 1;
+input int    SKBEPts      = 5;
 
 input group "=== BPK Breakeven ==="
 input bool   UseBPK       = false;
@@ -82,8 +120,8 @@ input int    MaxSpread    = 50;
 
 input group "=== Panel ==="
 input bool   ShowPanel    = true;
-input int    PanelX       = 10;     // panel left edge (pixels)
-input int    PanelY       = 20;     // panel top edge (pixels)
+input int    PanelX       = 10;
+input int    PanelY       = 20;
 
 //+------------------------------------------------------------------+
 //| Globals                                                          |
@@ -98,11 +136,12 @@ TriggerState gTrig;
 double gLastBuy  = 0.0;
 double gLastSell = 0.0;
 
-// Daily lot accumulators
 double   gDailyLot1  = 0.0;
 double   gDailyLot2  = 0.0;
 double   gDailyLot3  = 0.0;
 datetime gTodayStart = 0;
+
+double gBalanceHigh = 0.0;   // for DD% calculation
 
 //+------------------------------------------------------------------+
 //| HELPERS                                                          |
@@ -255,10 +294,7 @@ void ApplyBESL(ulong tk, int offsetPts) {
    int    d   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
    double nsl = op + d * offsetPts * _Point;
    bool better = (d == 1) ? (nsl > sl || sl == 0) : (nsl < sl || sl == 0);
-   if(better) {
-      int m = (int)PositionGetInteger(POSITION_MAGIC);
-      TR(m).PositionModify(tk, nsl, tp0);
-   }
+   if(better) TR((int)PositionGetInteger(POSITION_MAGIC)).PositionModify(tk, nsl, tp0);
 }
 
 //+------------------------------------------------------------------+
@@ -267,9 +303,7 @@ void ApplyBESL(ulong tk, int offsetPts) {
 int ADXDir() {
    if(!UseADX || hADX == INVALID_HANDLE) return 0;
    double adx[], pdi[], mdi[];
-   ArraySetAsSeries(adx, true);
-   ArraySetAsSeries(pdi, true);
-   ArraySetAsSeries(mdi, true);
+   ArraySetAsSeries(adx, true); ArraySetAsSeries(pdi, true); ArraySetAsSeries(mdi, true);
    if(CopyBuffer(hADX, 0, 0, 2, adx) < 2) return 0;
    if(CopyBuffer(hADX, 1, 0, 2, pdi) < 2) return 0;
    if(CopyBuffer(hADX, 2, 0, 2, mdi) < 2) return 0;
@@ -283,7 +317,7 @@ int ADXDir() {
 void ChkDayRollover() {
    datetime dayStart = iTime(_Symbol, PERIOD_D1, 0);
    if(dayStart != gTodayStart) {
-      gTodayStart  = dayStart;
+      gTodayStart = dayStart;
       gDailyLot1 = gDailyLot2 = gDailyLot3 = 0.0;
    }
 }
@@ -327,14 +361,12 @@ bool OO(int m, int dir, double lot) {
 }
 
 //+------------------------------------------------------------------+
-//| DoTP                                                             |
+//| TP                                                               |
 //+------------------------------------------------------------------+
 bool DoTP(int m, double req) {
    double gp = GrossProfit(m);
    if(gp <= 0) return false;
-   ulong  lTk[]; double lPf[];
-   double totalLoss = 0.0;
-   int nLoss = 0;
+   ulong lTk[]; double lPf[]; double totalLoss = 0.0; int nLoss = 0;
    if(SelfAbs > 0) {
       nLoss = GetWorstLoss(m, SelfAbs, lTk, lPf);
       for(int i = 0; i < nLoss; i++) totalLoss += MathAbs(lPf[i]);
@@ -353,12 +385,11 @@ bool DoTP(int m, double req) {
 }
 
 bool DoTPMulti(int &mgs[], double req) {
-   int nm = ArraySize(mgs);
-   if(nm == 0) return false;
+   int nm = ArraySize(mgs); if(nm == 0) return false;
    double totalGP = 0;
    for(int mi = 0; mi < nm; mi++) totalGP += GrossProfit(mgs[mi]);
    if(totalGP <= 0) return false;
-   ulong  allLTk[]; double allLPf[];
+   ulong allLTk[]; double allLPf[];
    ArrayResize(allLTk, 0); ArrayResize(allLPf, 0);
    if(SelfAbs > 0) {
       for(int mi = 0; mi < nm; mi++) {
@@ -366,7 +397,7 @@ bool DoTPMulti(int &mgs[], double req) {
          int n = GetWorstLoss(mgs[mi], SelfAbs, lTk, lPf);
          for(int j = 0; j < n; j++) {
             int sz = ArraySize(allLTk);
-            ArrayResize(allLTk, sz + 1); ArrayResize(allLPf, sz + 1);
+            ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
             allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
          }
       }
@@ -378,14 +409,14 @@ bool DoTPMulti(int &mgs[], double req) {
    for(int i = 0; i < ArraySize(allLTk); i++) totalLoss += MathAbs(allLPf[i]);
    if(totalGP < req + totalLoss) return false;
    for(int i = 0; i < ArraySize(allLTk); i++) CloseByTicket(allLTk[i]);
-   ulong  allPTk[]; double allPPf[];
+   ulong allPTk[]; double allPPf[];
    ArrayResize(allPTk, 0); ArrayResize(allPPf, 0);
    for(int mi = 0; mi < nm; mi++) {
       ulong pTk[]; double pPf[];
       int n = GetBestProfit(mgs[mi], 999, pTk, pPf);
       for(int j = 0; j < n; j++) {
          int sz = ArraySize(allPTk);
-         ArrayResize(allPTk, sz + 1); ArrayResize(allPPf, sz + 1);
+         ArrayResize(allPTk, sz+1); ArrayResize(allPPf, sz+1);
          allPTk[sz] = pTk[j]; allPPf[sz] = pPf[j];
       }
    }
@@ -399,182 +430,184 @@ bool DoTPMulti(int &mgs[], double req) {
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| TP Checks                                                        |
-//+------------------------------------------------------------------+
 void ChkSepTP() {
    if(!UseSepTP) return;
-   if(En1 && Count(MAGIC_1) > 0) DoTP(MAGIC_1, TP1);
-   if(En2 && Count(MAGIC_2) > 0) DoTP(MAGIC_2, TP2);
-   if(En3 && Count(MAGIC_3) > 0) DoTP(MAGIC_3, TP3);
+   if(En1 && Count(MAGIC_1)>0) DoTP(MAGIC_1, TP1);
+   if(En2 && Count(MAGIC_2)>0) DoTP(MAGIC_2, TP2);
+   if(En3 && Count(MAGIC_3)>0) DoTP(MAGIC_3, TP3);
 }
-
 void ChkPairTP() {
    if(!UsePairTP) return;
-   double pair = PNL(MAGIC_1) + PNL(MAGIC_3);
-   if(pair < TPPair) return;
-   int mgs[] = {MAGIC_1, MAGIC_3};
-   DoTPMulti(mgs, TPPair);
+   if(PNL(MAGIC_1)+PNL(MAGIC_3) < TPPair) return;
+   int mgs[]={MAGIC_1,MAGIC_3}; DoTPMulti(mgs,TPPair);
 }
-
 void ChkTotTP() {
    if(!UseTotTP) return;
-   double tot = PNL(MAGIC_1) + PNL(MAGIC_2) + PNL(MAGIC_3);
-   if(tot < TPTot) return;
-   int mgs[] = {MAGIC_1, MAGIC_2, MAGIC_3};
-   DoTPMulti(mgs, TPTot);
+   if(PNL(MAGIC_1)+PNL(MAGIC_2)+PNL(MAGIC_3) < TPTot) return;
+   int mgs[]={MAGIC_1,MAGIC_2,MAGIC_3}; DoTPMulti(mgs,TPTot);
 }
 
-//+------------------------------------------------------------------+
-//| BPK Breakeven                                                    |
-//+------------------------------------------------------------------+
 void ChkBPK() {
    if(!UseBPK) return;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+   for(int i = PositionsTotal()-1; i>=0; i--) {
       ulong tk = PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      double pp = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      double pp = PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
       if(pp < BPKMinProfit) continue;
       ApplyBESL(tk, BPKBEPts);
    }
 }
 
-//+------------------------------------------------------------------+
-//| Grid Lot                                                         |
-//+------------------------------------------------------------------+
 double GridLot(int m, int level) {
-   double base = (m == MAGIC_1) ? Lot1 : (m == MAGIC_2) ? Lot2 : Lot3;
-   double mult = (m == MAGIC_1) ? LotMult1 : (m == MAGIC_3) ? LotMult3 : 1.0;
-   return NLot(base * MathPow(mult, (double)level));
+   double base = (m==MAGIC_1)?Lot1:(m==MAGIC_2)?Lot2:Lot3;
+   double mult = (m==MAGIC_1)?LotMult1:(m==MAGIC_3)?LotMult3:1.0;
+   return NLot(base*MathPow(mult,(double)level));
 }
 
-//+------------------------------------------------------------------+
-//| Grid checks                                                      |
-//+------------------------------------------------------------------+
 void ChkGrid1() {
    if(!En1) return;
-   if(gTrig.active && gTrig.stoppedMagic == MAGIC_1) return;
-   int cnt = Count(MAGIC_1);
-   if(cnt >= MaxGrid1) return;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   if(cnt == 0) { if(OO(MAGIC_1, 1, GridLot(MAGIC_1, 0))) gLastBuy = ask; return; }
-   if(gLastBuy > 0 && gLastBuy - ask >= GS1 * _Point)
-      if(OO(MAGIC_1, 1, GridLot(MAGIC_1, cnt))) gLastBuy = ask;
+   if(gTrig.active && gTrig.stoppedMagic==MAGIC_1) return;
+   int cnt=Count(MAGIC_1); if(cnt>=MaxGrid1) return;
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   if(cnt==0){ if(OO(MAGIC_1,1,GridLot(MAGIC_1,0))) gLastBuy=ask; return; }
+   if(gLastBuy>0 && gLastBuy-ask>=GS1*_Point)
+      if(OO(MAGIC_1,1,GridLot(MAGIC_1,cnt))) gLastBuy=ask;
 }
-
 void ChkGrid3() {
    if(!En3) return;
-   if(gTrig.active && gTrig.stoppedMagic == MAGIC_3) return;
-   int cnt = Count(MAGIC_3);
-   if(cnt >= MaxGrid3) return;
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   if(cnt == 0) { if(OO(MAGIC_3, -1, GridLot(MAGIC_3, 0))) gLastSell = bid; return; }
-   if(gLastSell > 0 && bid - gLastSell >= GS3 * _Point)
-      if(OO(MAGIC_3, -1, GridLot(MAGIC_3, cnt))) gLastSell = bid;
+   if(gTrig.active && gTrig.stoppedMagic==MAGIC_3) return;
+   int cnt=Count(MAGIC_3); if(cnt>=MaxGrid3) return;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   if(cnt==0){ if(OO(MAGIC_3,-1,GridLot(MAGIC_3,0))) gLastSell=bid; return; }
+   if(gLastSell>0 && bid-gLastSell>=GS3*_Point)
+      if(OO(MAGIC_3,-1,GridLot(MAGIC_3,cnt))) gLastSell=bid;
 }
-
 void ChkM2() {
    if(!En2) return;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   int dir = 0;
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   int dir=0;
    if(gTrig.active) {
-      if(gTrig.stoppedMagic == MAGIC_1)
-         dir = (bid >= gTrig.trigPrice) ? 1 : -1;
-      else
-         dir = (ask <= gTrig.trigPrice) ? -1 : 1;
-   } else {
-      dir = gADXDir;
-   }
-   if(dir == 0) return;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong tk = PositionGetTicket(i);
+      dir=(gTrig.stoppedMagic==MAGIC_1)?((bid>=gTrig.trigPrice)?1:-1):((ask<=gTrig.trigPrice)?-1:1);
+   } else { dir=gADXDir; }
+   if(dir==0) return;
+   for(int i=PositionsTotal()-1;i>=0;i--) {
+      ulong tk=PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != MAGIC_2) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      int pd = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-      if(pd != dir) { CM(MAGIC_2); return; }
+      if((int)PositionGetInteger(POSITION_MAGIC)!=MAGIC_2) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      int pd=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(pd!=dir){ CM(MAGIC_2); return; }
    }
-   int cnt = Count(MAGIC_2);
-   if(cnt >= MaxGrid2) return;
-   OO(MAGIC_2, dir, GridLot(MAGIC_2, cnt));
+   int cnt=Count(MAGIC_2); if(cnt>=MaxGrid2) return;
+   OO(MAGIC_2,dir,GridLot(MAGIC_2,cnt));
 }
 
-//+------------------------------------------------------------------+
-//| Trigger                                                          |
-//+------------------------------------------------------------------+
 void ChkTrigger() {
    if(!gTrig.active) {
-      if(TimeCurrent() < gTrigCoolEnd) return;
-      if(En1 && Count(MAGIC_1) > 0) {
-         double pnl1 = PNL(MAGIC_1);
-         if(pnl1 <= -LossTrig1) {
-            gTrig.active = true; gTrig.stoppedMagic = MAGIC_1;
-            gTrig.trigPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            PrintFormat("[Trigger] M1 PNL=%.2f  trigPrice=%.5f", pnl1, gTrig.trigPrice);
+      if(TimeCurrent()<gTrigCoolEnd) return;
+      if(En1&&Count(MAGIC_1)>0){
+         double pnl1=PNL(MAGIC_1);
+         if(pnl1<=-LossTrig1){
+            gTrig.active=true; gTrig.stoppedMagic=MAGIC_1;
+            gTrig.trigPrice=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+            PrintFormat("[Trigger] M1 PNL=%.2f  trig=%.5f",pnl1,gTrig.trigPrice);
             CM(MAGIC_2); return;
          }
       }
-      if(En3 && Count(MAGIC_3) > 0) {
-         double pnl3 = PNL(MAGIC_3);
-         if(pnl3 <= -LossTrig3) {
-            gTrig.active = true; gTrig.stoppedMagic = MAGIC_3;
-            gTrig.trigPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            PrintFormat("[Trigger] M3 PNL=%.2f  trigPrice=%.5f", pnl3, gTrig.trigPrice);
+      if(En3&&Count(MAGIC_3)>0){
+         double pnl3=PNL(MAGIC_3);
+         if(pnl3<=-LossTrig3){
+            gTrig.active=true; gTrig.stoppedMagic=MAGIC_3;
+            gTrig.trigPrice=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+            PrintFormat("[Trigger] M3 PNL=%.2f  trig=%.5f",pnl3,gTrig.trigPrice);
             CM(MAGIC_2); return;
          }
       }
    } else {
-      if(PNL(gTrig.stoppedMagic) >= 0) {
-         PrintFormat("[Trigger] M%d recovered — released",
-                     gTrig.stoppedMagic == MAGIC_1 ? 1 : 3);
-         gTrig.active = false; gTrig.stoppedMagic = 0; gTrig.trigPrice = 0.0;
-         gTrigCoolEnd = TimeCurrent() + TrigCoolSec;
+      if(PNL(gTrig.stoppedMagic)>=0){
+         PrintFormat("[Trigger] M%d recovered",gTrig.stoppedMagic==MAGIC_1?1:3);
+         gTrig.active=false; gTrig.stoppedMagic=0; gTrig.trigPrice=0.0;
+         gTrigCoolEnd=TimeCurrent()+TrigCoolSec;
          CM(MAGIC_2);
       }
    }
 }
 
 //+------------------------------------------------------------------+
-//| Panel helpers                                                    |
+//| Panel primitives                                                 |
 //+------------------------------------------------------------------+
-void PanelRect(string name, int x, int y, int w, int h, color bg, color border) {
-   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE,  x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE,  y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE,      w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE,      h);
-   ObjectSetInteger(0, name, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR,    bg);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,      border);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE,BORDER_FLAT);
-   ObjectSetInteger(0, name, OBJPROP_BACK,       true);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+void Rect(string n,int x,int y,int w,int h,color bg,color brd) {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);        ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);     ObjectSetInteger(0,n,OBJPROP_COLOR,brd);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_BACK,true);      ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+}
+void Lbl(string n,int x,int y,string t,color c,int fs,string font="Arial Bold") {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetString (0,n,OBJPROP_TEXT,t);         ObjectSetString (0,n,OBJPROP_FONT,font);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);    ObjectSetInteger(0,n,OBJPROP_COLOR,c);
+   ObjectSetInteger(0,n,OBJPROP_ANCHOR,ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);     ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+}
+void DeletePanel() { ObjectsDeleteAll(0,PFX); }
+
+color PnlClr(double v){
+   if(v> 0.005) return CL_POS;
+   if(v<-0.005) return CL_NEG;
+   return CL_NEU;
 }
 
-void PanelLbl(string name, int x, int y, string txt, color clr, int fs=9, string font="Arial Bold") {
-   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE,  x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE,  y);
-   ObjectSetInteger(0, name, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-   ObjectSetString (0, name, OBJPROP_TEXT,       txt);
-   ObjectSetString (0, name, OBJPROP_FONT,       font);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE,   fs);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,      clr);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_BACK,       false);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+string TFStr(ENUM_TIMEFRAMES tf) {
+   switch(tf){
+      case PERIOD_M1: return "M1"; case PERIOD_M5:  return "M5";
+      case PERIOD_M15:return "M15";case PERIOD_M30: return "M30";
+      case PERIOD_H1: return "H1"; case PERIOD_H4:  return "H4";
+      case PERIOD_D1: return "D1"; case PERIOD_W1:  return "W1";
+      case PERIOD_MN1:return "MN"; default:          return "";
+   }
 }
 
-void DeletePanel() {
-   ObjectsDeleteAll(0, PFX);
+// Draw 14-char position usage bar using two overlapping labels
+// Background label: "░░░░░░░░░░░░░░"  Fill label: "████..." (filled portion only)
+void DrawBar(string id, int x, int y, int cnt, int maxCnt, color acClr) {
+   string bg = "░░░░░░░░░░░░░░";
+   Lbl(PFX+id+"_PBG", x, y, bg, CB_BAR_BG, FS, "Courier New");
+   int filled = (maxCnt>0) ? MathMin(14,(int)MathRound((double)cnt/maxCnt*14.0)) : 0;
+   string fg = ""; for(int i=0;i<filled;i++) fg+="█";
+   Lbl(PFX+id+"_PFG", x, y, fg, acClr, FS, "Courier New");
 }
 
-color PnlColor(double v) {
-   if(v >  0.01) return clrLimeGreen;
-   if(v < -0.01) return clrTomato;
-   return clrSilver;
+// Draw one complete magic section
+void DrawMagicSec(string id, int sy,
+                  color acClr, color bgClr,
+                  string tag, string dirTxt, color dirClr,
+                  int cnt, int maxCnt, double pnl, double lotDay) {
+   int x = PanelX+3;
+   Rect(PFX+id+"_BG",  x,    sy,   PW_IN, SEC_H, bgClr,  bgClr);
+   Rect(PFX+id+"_ACC", x,    sy,   5,     SEC_H, acClr,  acClr);
+   // subtle inner top border highlight
+   Rect(PFX+id+"_HI",  x+5,  sy,   PW_IN-5, 1,   C'25,32,58', C'25,32,58');
+
+   int r1 = sy+8;
+   Lbl(PFX+id+"_TAG", x+14, r1, tag,    acClr,    FN);
+   Lbl(PFX+id+"_DIR", x+40, r1, dirTxt, dirClr,   FN);
+   DrawBar(id, x+124, r1, cnt, maxCnt, acClr);
+   Lbl(PFX+id+"_CNT", x+243, r1,
+       StringFormat("%2d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
+
+   int r2 = sy+29;
+   Lbl(PFX+id+"_PNLL", x+14, r2, "PNL",                 CL_INFO, FS, "Arial");
+   Lbl(PFX+id+"_PNLV", x+40, r2, StringFormat("%+.2f $", pnl), PnlClr(pnl), FN);
+   Lbl(PFX+id+"_LOTL", x+160, r2, "Lot/Day",             CL_INFO, FXS, "Arial");
+   Lbl(PFX+id+"_LOTV", x+205, r2, StringFormat("%.2f",lotDay),  CL_CYAN, FN);
+   Lbl(PFX+id+"_LOTU", x+249, r2, "lot",                 CL_INFO, FXS, "Arial");
 }
 
 //+------------------------------------------------------------------+
@@ -582,116 +615,110 @@ color PnlColor(double v) {
 //+------------------------------------------------------------------+
 void ShowDashboard() {
    if(!ShowPanel) return;
-   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE)) return;
+   if(MQLInfoInteger(MQL_TESTER)&&!MQLInfoInteger(MQL_VISUAL_MODE)) return;
 
-   int x  = PanelX;
-   int y  = PanelY;
-   int W  = 290;     // panel width
-   int RH = 19;      // row height
-   int xi = x + 10; // inner left edge
+   int x = PanelX;
+   int y = PanelY;
+   int xi = x+3;   // inner X
 
-   // snap total rows: header(1) + sep(1) + 3x magic(2 rows each) + sep(1) + total(1) + info(2) + trig(1) = 13 rows
-   int H = RH * 13 + 14;
-
-   // Background + border
-   PanelRect(PFX+"BG",   x-1, y-1, W+2, H+2, C'20,20,30',    C'80,80,120');
-   PanelRect(PFX+"FILL", x,   y,   W,   H,   C'18,18,28',    C'18,18,28');
-
-   // Header bar
-   PanelRect(PFX+"HDR_BG", x, y, W, RH+4, C'40,30,70', C'40,30,70');
-   PanelLbl(PFX+"HDR", xi, y+3, "★  HybridPro V"+EA_VER+"  ★", clrGold, 10);
-
-   int row = y + RH + 8;
-
-   // Separator
-   PanelLbl(PFX+"SEP1", xi, row, "─────────────────────────────", clrDimGray, 7, "Courier New");
-   row += RH - 4;
-
-   // ── M1 BUY ──
-   double p1  = PNL(MAGIC_1);
-   int    c1  = Count(MAGIC_1);
-   PanelRect(PFX+"M1_BAR", x, row-1, 4, RH*2+2, clrDodgerBlue, clrDodgerBlue);
-   PanelLbl(PFX+"M1_TAG", xi+6, row,      "M1",        clrDodgerBlue,  9);
-   PanelLbl(PFX+"M1_DIR", xi+30, row,     "[BUY]",     clrDeepSkyBlue, 9);
-   PanelLbl(PFX+"M1_POS", xi+80, row,
-            StringFormat("%d pos", c1),  clrWhite, 9);
-   PanelLbl(PFX+"M1_PNL", xi+140, row,
-            StringFormat("PNL: %+.2f", p1), PnlColor(p1), 9);
-   PanelLbl(PFX+"M1_LOT", xi+14, row+RH,
-            StringFormat("Lot/Day: %.2f", gDailyLot1), clrCyan, 8, "Arial");
-   row += RH * 2 + 2;
-
-   // ── M2 DYN ──
-   double p2  = PNL(MAGIC_2);
-   int    c2  = Count(MAGIC_2);
-   string m2dir = (gADXDir == 1) ? "BUY" : (gADXDir == -1) ? "SELL" : "---";
-   color  m2dc  = (gADXDir == 1) ? clrSkyBlue : (gADXDir == -1) ? clrLightSalmon : clrGray;
-   PanelRect(PFX+"M2_BAR", x, row-1, 4, RH*2+2, clrMediumPurple, clrMediumPurple);
-   PanelLbl(PFX+"M2_TAG", xi+6, row,  "M2",            clrMediumPurple, 9);
-   PanelLbl(PFX+"M2_DIR", xi+30, row,
-            StringFormat("[%s]", m2dir), m2dc, 9);
-   PanelLbl(PFX+"M2_POS", xi+80, row,
-            StringFormat("%d pos", c2),  clrWhite, 9);
-   PanelLbl(PFX+"M2_PNL", xi+140, row,
-            StringFormat("PNL: %+.2f", p2), PnlColor(p2), 9);
-   PanelLbl(PFX+"M2_LOT", xi+14, row+RH,
-            StringFormat("Lot/Day: %.2f", gDailyLot2), clrCyan, 8, "Arial");
-   row += RH * 2 + 2;
-
-   // ── M3 SELL ──
-   double p3  = PNL(MAGIC_3);
-   int    c3  = Count(MAGIC_3);
-   PanelRect(PFX+"M3_BAR", x, row-1, 4, RH*2+2, clrOrange, clrOrange);
-   PanelLbl(PFX+"M3_TAG", xi+6, row,   "M3",         clrOrange,     9);
-   PanelLbl(PFX+"M3_DIR", xi+30, row,  "[SELL]",     clrSandyBrown, 9);
-   PanelLbl(PFX+"M3_POS", xi+80, row,
-            StringFormat("%d pos", c3),  clrWhite, 9);
-   PanelLbl(PFX+"M3_PNL", xi+140, row,
-            StringFormat("PNL: %+.2f", p3), PnlColor(p3), 9);
-   PanelLbl(PFX+"M3_LOT", xi+14, row+RH,
-            StringFormat("Lot/Day: %.2f", gDailyLot3), clrCyan, 8, "Arial");
-   row += RH * 2 + 4;
-
-   // Separator
-   PanelLbl(PFX+"SEP2", xi, row, "─────────────────────────────", clrDimGray, 7, "Courier New");
-   row += RH - 4;
-
-   // Total PNL
-   double tot = p1 + p2 + p3;
-   PanelLbl(PFX+"TOT", xi, row,
-            StringFormat("TOTAL PNL:  %+.2f", tot), PnlColor(tot), 10);
-   row += RH;
-
-   // ADX + Spread
-   string adxTxt = "ADX: OFF";
-   color  adxClr = clrGray;
-   if(UseADX && hADX != INVALID_HANDLE) {
-      if(gADXDir ==  1) { adxTxt = "ADX: ▲ UP";   adxClr = clrLimeGreen; }
-      else if(gADXDir == -1) { adxTxt = "ADX: ▼ DOWN"; adxClr = clrTomato; }
-      else                   { adxTxt = "ADX: ▬ FLAT"; adxClr = clrGray; }
-   }
+   // ── Live data ──────────────────────────────────────────────────
+   double p1=PNL(MAGIC_1), p2=PNL(MAGIC_2), p3=PNL(MAGIC_3);
+   int    c1=Count(MAGIC_1), c2=Count(MAGIC_2), c3=Count(MAGIC_3);
+   double tot   = p1+p2+p3;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double bal    = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(bal>gBalanceHigh) gBalanceHigh=bal;
+   double dd = (gBalanceHigh>0 && equity<gBalanceHigh)
+               ? (gBalanceHigh-equity)/gBalanceHigh*100.0 : 0.0;
    int spd = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   PanelLbl(PFX+"ADX", xi, row, adxTxt, adxClr, 9);
-   PanelLbl(PFX+"SPD", xi+140, row,
-            StringFormat("Spread: %d", spd),
-            spd > MaxSpread ? clrTomato : clrSilver, 9);
-   row += RH;
 
-   // Trigger status
-   string trigTxt;
-   color  trigClr;
-   if(gTrig.active) {
-      trigTxt = StringFormat("⛔ STOPPED M%d  @ %.5f",
-                             gTrig.stoppedMagic == MAGIC_1 ? 1 : 3, gTrig.trigPrice);
-      trigClr = clrTomato;
-   } else if(TimeCurrent() < gTrigCoolEnd) {
-      trigTxt = StringFormat("◷ COOLDOWN  %ds", (int)(gTrigCoolEnd - TimeCurrent()));
-      trigClr = clrOrange;
+   // ── Total panel height ──────────────────────────────────────────
+   // outer 3px border + hdr32 + 3×(sec52+sep1) + stat58 + 3px border
+   // = 3 + 32 + 2 + 3*(52+1) + 58 + 3 = 257
+   int PH = 3+HDR_H+2+3*(SEC_H+1)+STAT_H+3;  // = 257
+
+   // ── Outer border ───────────────────────────────────────────────
+   Rect(PFX+"BORDER", x,   y,   PW_OUT, PH,   CB_BORDER, CB_BORDER);
+   Rect(PFX+"BG",     xi,  y+3, PW_IN,  PH-6, CB_BG,     CB_BG);
+
+   // ── Header ─────────────────────────────────────────────────────
+   int hy = y+3;
+   Rect(PFX+"HDR_BG",   xi,  hy,      PW_IN, HDR_H,   CB_HDR,    CB_HDR);
+   Rect(PFX+"HDR_TOP",  xi,  hy,      PW_IN, 1,       C'70,108,210', C'70,108,210');
+   Rect(PFX+"HDR_LINE", xi,  hy+HDR_H,PW_IN, 2,       CB_HDR_LN, CB_HDR_LN);
+   Lbl(PFX+"HDR_TXT",  xi+12, hy+9, "⚡  HYBRID PRO  V"+EA_VER, CL_GOLD, FH);
+   string stf = _Symbol+" • "+TFStr(_Period);
+   Lbl(PFX+"HDR_STF",  xi+220, hy+11, stf, C'125,145,180', FS, "Arial");
+
+   // ── Magic sections ─────────────────────────────────────────────
+   int sy1 = hy+HDR_H+2;
+   int sy2 = sy1+SEC_H+1;
+   int sy3 = sy2+SEC_H+1;
+
+   Rect(PFX+"SEP1", xi, sy1+SEC_H, PW_IN, 1, CB_SEP, CB_SEP);
+   Rect(PFX+"SEP2", xi, sy2+SEC_H, PW_IN, 1, CB_SEP, CB_SEP);
+   Rect(PFX+"SEP3", xi, sy3+SEC_H, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
+
+   // M2 direction
+   string m2dir; color m2clr;
+   if     (gADXDir== 1){ m2dir="▲ BUY";  m2clr=C'135,175,255'; }
+   else if(gADXDir==-1){ m2dir="▼ SELL"; m2clr=C'255,145,145'; }
+   else                 { m2dir="■ IDLE"; m2clr=C'110,115,140'; }
+
+   DrawMagicSec("M1", sy1, CA_M1, CB_M1,
+                "M1", "▲ BUY",  C'165,208,255', c1, MaxGrid1, p1, gDailyLot1);
+   DrawMagicSec("M2", sy2, CA_M2, CB_M2,
+                "M2", m2dir,     m2clr,          c2, MaxGrid2, p2, gDailyLot2);
+   DrawMagicSec("M3", sy3, CA_M3, CB_M3,
+                "M3", "▼ SELL", C'255,195,135', c3, MaxGrid3, p3, gDailyLot3);
+
+   // ── Stats section ──────────────────────────────────────────────
+   int stY = sy3+SEC_H+2;
+   Rect(PFX+"STAT_BG", xi, stY, PW_IN, STAT_H, CB_STAT, CB_STAT);
+
+   // Row 1 — Total float + Equity
+   int sr1 = stY+6;
+   Lbl(PFX+"TOT_L",  xi+12, sr1, "FLOAT",                    CL_INFO,  FS, "Arial");
+   Lbl(PFX+"TOT_V",  xi+52, sr1, StringFormat("%+.2f $", tot), PnlClr(tot), 11);
+   Rect(PFX+"VDIV1", xi+162, sr1+1, 1, 22, C'30,38,65', C'30,38,65');
+   Lbl(PFX+"EQ_L",   xi+170, sr1, "EQUITY",                   CL_INFO,  FS, "Arial");
+   Lbl(PFX+"EQ_V",   xi+212, sr1, StringFormat("$%.0f", equity), CL_BRIGHT, FN);
+
+   // Row 2 — DD + Spread
+   int sr2 = stY+26;
+   color ddClr = (dd>=10)?CL_NEG:(dd>=5)?C'255,165,0':CL_NEU;
+   Lbl(PFX+"DD_L",   xi+12, sr2, "Drawdown",               CL_INFO,  FS, "Arial");
+   Lbl(PFX+"DD_V",   xi+68, sr2, StringFormat("%.2f%%",dd), ddClr,    FN);
+   Rect(PFX+"VDIV2", xi+162, sr2+1, 1, 20, C'30,38,65', C'30,38,65');
+   Lbl(PFX+"SPD_L",  xi+170, sr2, "Spread",                 CL_INFO,  FS, "Arial");
+   color spdClr=(spd>MaxSpread)?CL_NEG:CL_NEU;
+   Lbl(PFX+"SPD_V",  xi+212, sr2, StringFormat("%d pts",spd), spdClr,  FN);
+
+   // Row 3 — ADX + Trigger/Status
+   int sr3 = stY+44;
+   string adxTxt; color adxClr;
+   if(!UseADX||hADX==INVALID_HANDLE){ adxTxt="ADX ■ OFF";   adxClr=C'80,90,115';  }
+   else if(gADXDir== 1)             { adxTxt="ADX ▲ UP";    adxClr=CL_POS;         }
+   else if(gADXDir==-1)             { adxTxt="ADX ▼ DOWN";  adxClr=CL_NEG;         }
+   else                              { adxTxt="ADX ▬ FLAT";  adxClr=CL_NEU;         }
+   Lbl(PFX+"ADX_V", xi+12, sr3, adxTxt, adxClr, FN);
+
+   string trigTxt; color trigClr;
+   if(gTrig.active){
+      trigTxt=StringFormat("⛔ M%d STOP", gTrig.stoppedMagic==MAGIC_1?1:3);
+      trigClr=CL_NEG;
+   } else if(TimeCurrent()<gTrigCoolEnd){
+      trigTxt=StringFormat("◷ COOL %ds",(int)(gTrigCoolEnd-TimeCurrent()));
+      trigClr=C'255,165,0';
    } else {
-      trigTxt = "✔ Running Normal";
-      trigClr = clrLimeGreen;
+      trigTxt="✔ Running";
+      trigClr=CL_POS;
    }
-   PanelLbl(PFX+"TRIG", xi, row, trigTxt, trigClr, 9);
+   Lbl(PFX+"TRIG_V", xi+170, sr3, trigTxt, trigClr, FN);
+
+   // Footer timestamp
+   Lbl(PFX+"TIME", xi+PW_IN-62, stY+STAT_H-14,
+       TimeToString(TimeCurrent(), TIME_MINUTES), CL_TIME, FXS, "Arial");
 
    ChartRedraw();
 }
@@ -701,66 +728,48 @@ void ShowDashboard() {
 //+------------------------------------------------------------------+
 int OnInit() {
    datetime now = TimeCurrent();
-   if(now > 0 && now >= StringToTime(EXPIRY_STR)) {
-      Print("[Init] EA expired"); return INIT_FAILED;
-   }
-
+   if(now>0 && now>=StringToTime(EXPIRY_STR)){ Print("[Init] expired"); return INIT_FAILED; }
    T1.SetExpertMagicNumber(MAGIC_1); T1.SetDeviationInPoints(30);
    T2.SetExpertMagicNumber(MAGIC_2); T2.SetDeviationInPoints(30);
    T3.SetExpertMagicNumber(MAGIC_3); T3.SetDeviationInPoints(30);
-
-   if(UseADX) {
-      hADX = iADX(_Symbol, ADXTF, ADXPer);
-      if(hADX == INVALID_HANDLE)
-         Print("[Init] ADX handle fail — ADX filter disabled");
+   if(UseADX){
+      hADX=iADX(_Symbol,ADXTF,ADXPer);
+      if(hADX==INVALID_HANDLE) Print("[Init] ADX handle fail");
    }
-
-   gLastBuy = 0.0; gLastSell = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong tk = PositionGetTicket(i);
+   gLastBuy=0.0; gLastSell=0.0;
+   for(int i=PositionsTotal()-1;i>=0;i--){
+      ulong tk=PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      int    m  = (int)PositionGetInteger(POSITION_MAGIC);
-      double op = PositionGetDouble(POSITION_PRICE_OPEN);
-      if(m == MAGIC_1 && PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-         { if(gLastBuy  == 0 || op < gLastBuy)  gLastBuy  = op; }
-      if(m == MAGIC_3 && PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
-         { if(gLastSell == 0 || op > gLastSell) gLastSell = op; }
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      int m=(int)PositionGetInteger(POSITION_MAGIC);
+      double op=PositionGetDouble(POSITION_PRICE_OPEN);
+      if(m==MAGIC_1&&PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+         { if(gLastBuy==0||op<gLastBuy) gLastBuy=op; }
+      if(m==MAGIC_3&&PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_SELL)
+         { if(gLastSell==0||op>gLastSell) gLastSell=op; }
    }
-
-   gTrig.active = false; gTrig.stoppedMagic = 0; gTrig.trigPrice = 0.0;
-   gTrigCoolEnd = 0;
-   gADXDir      = 0;
-
+   gTrig.active=false; gTrig.stoppedMagic=0; gTrig.trigPrice=0.0;
+   gTrigCoolEnd=0; gADXDir=0;
+   gBalanceHigh=AccountInfoDouble(ACCOUNT_BALANCE);
    RestoreDailyLots();
-
-   PrintFormat("[Init] HybridPro V%s OK  M1=%d M2=%d M3=%d",
-               EA_VER, Count(MAGIC_1), Count(MAGIC_2), Count(MAGIC_3));
+   PrintFormat("[Init] HybridPro V%s  M1=%d M2=%d M3=%d",
+               EA_VER,Count(MAGIC_1),Count(MAGIC_2),Count(MAGIC_3));
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| OnDeinit                                                         |
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason) {
-   if(hADX != INVALID_HANDLE) { IndicatorRelease(hADX); hADX = INVALID_HANDLE; }
-   DeletePanel();
-   Comment("");
+void OnDeinit(const int reason){
+   if(hADX!=INVALID_HANDLE){ IndicatorRelease(hADX); hADX=INVALID_HANDLE; }
+   DeletePanel(); Comment("");
 }
 
-//+------------------------------------------------------------------+
-//| OnTick                                                           |
-//+------------------------------------------------------------------+
-void OnTick() {
-   gADXDir = ADXDir();
+void OnTick(){
+   gADXDir=ADXDir();
+   double b=AccountInfoDouble(ACCOUNT_BALANCE);
+   if(b>gBalanceHigh) gBalanceHigh=b;
    ChkDayRollover();
    ChkTrigger();
-   ChkGrid1();
-   ChkGrid3();
-   ChkM2();
-   ChkSepTP();
-   ChkPairTP();
-   ChkTotTP();
+   ChkGrid1(); ChkGrid3(); ChkM2();
+   ChkSepTP(); ChkPairTP(); ChkTotTP();
    ChkBPK();
    ShowDashboard();
 }

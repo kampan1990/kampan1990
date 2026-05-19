@@ -50,6 +50,7 @@ input int    MaxGrid3     = 20;
 input group "=== Loss Trigger ==="
 input double LossTrig1    = 200.0;  // M1 stop threshold ($)
 input double LossTrig3    = 200.0;  // M3 stop threshold ($)
+input int    TrigCoolSec  = 300;    // cooldown (seconds) before trigger can re-arm
 
 input group "=== ADX ==="
 input bool            UseADX  = true;
@@ -85,12 +86,14 @@ input bool   ShowPanel    = true;
 //| Globals                                                          |
 //+------------------------------------------------------------------+
 CTrade T1, T2, T3;
-int    hADX      = INVALID_HANDLE;
+int    hADX          = INVALID_HANDLE;
+int    gADXDir       = 0;       // cached per tick: 1=buy, -1=sell, 0=flat/off
+datetime gTrigCoolEnd = 0;      // earliest time trigger can re-arm after release
 
 TriggerState gTrig = {false, 0, 0.0};
 
-double gLastBuy  = 0.0;  // lowest M1 BUY open price (most recent in downward grid)
-double gLastSell = 0.0;  // highest M3 SELL open price (most recent in upward grid)
+double gLastBuy  = 0.0;  // price of last M1 BUY opened (lowest in downward grid)
+double gLastSell = 0.0;  // price of last M3 SELL opened (highest in upward grid)
 
 //+------------------------------------------------------------------+
 //| HELPERS                                                          |
@@ -152,6 +155,19 @@ double GrossProfit(int m) {
    return p;
 }
 
+// In-place bubble sort of parallel (tk, pf) arrays over the first c elements.
+// ascending=true → most-negative first (worst loss); false → most-positive first (best profit)
+void SortPairsByPnl(ulong &tk[], double &pf[], int c, bool ascending) {
+   for(int i = 0; i < c - 1; i++)
+      for(int j = i + 1; j < c; j++) {
+         bool swap = ascending ? (pf[j] < pf[i]) : (pf[j] > pf[i]);
+         if(swap) {
+            ulong  tu = tk[i]; tk[i] = tk[j]; tk[j] = tu;
+            double pu = pf[i]; pf[i] = pf[j]; pf[j] = pu;
+         }
+      }
+}
+
 // Returns up to maxN worst (most-negative) losing positions, sorted ascending
 int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
    int total = PositionsTotal();
@@ -169,12 +185,7 @@ int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
       tk[c] = t; pf[c] = pp; c++;
    }
 
-   for(int i = 0; i < c - 1; i++)
-      for(int j = i + 1; j < c; j++)
-         if(pf[j] < pf[i]) {
-            ulong  tu = tk[i]; tk[i] = tk[j]; tk[j] = tu;
-            double pu = pf[i]; pf[i] = pf[j]; pf[j] = pu;
-         }
+   SortPairsByPnl(tk, pf, c, true);
 
    int n = MathMin(c, maxN);
    ArrayResize(outTk, n); ArrayResize(outPf, n);
@@ -199,12 +210,7 @@ int GetBestProfit(int m, int maxN, ulong &outTk[], double &outPf[]) {
       tk[c] = t; pf[c] = pp; c++;
    }
 
-   for(int i = 0; i < c - 1; i++)
-      for(int j = i + 1; j < c; j++)
-         if(pf[j] > pf[i]) {
-            ulong  tu = tk[i]; tk[i] = tk[j]; tk[j] = tu;
-            double pu = pf[i]; pf[i] = pf[j]; pf[j] = pu;
-         }
+   SortPairsByPnl(tk, pf, c, false);
 
    int n = MathMin(c, maxN);
    ArrayResize(outTk, n); ArrayResize(outPf, n);
@@ -243,31 +249,36 @@ bool HasPositionNearPrice(int m, int dir, double price, int gsPts) {
    return false;
 }
 
-//+------------------------------------------------------------------+
-//| ADX                                                              |
-//+------------------------------------------------------------------+
-bool ADXTrendBuy() {
-   if(!UseADX || hADX == INVALID_HANDLE) return true;
-   double adx[], pdi[], mdi[];
-   ArraySetAsSeries(adx, true);
-   ArraySetAsSeries(pdi, true);
-   ArraySetAsSeries(mdi, true);
-   if(CopyBuffer(hADX, 0, 0, 2, adx) < 2) return true;
-   if(CopyBuffer(hADX, 1, 0, 2, pdi) < 2) return true;
-   if(CopyBuffer(hADX, 2, 0, 2, mdi) < 2) return true;
-   return (adx[0] >= ADXMin && pdi[0] > mdi[0]);
+// Apply a breakeven SL at op + d*offsetPts*_Point if that improves the current SL
+void ApplyBESL(ulong tk, int offsetPts) {
+   if(!PositionSelectByTicket(tk)) return;
+   double op  = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl  = PositionGetDouble(POSITION_SL);
+   double tp0 = PositionGetDouble(POSITION_TP);
+   int    d   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+   double nsl = op + d * offsetPts * _Point;
+   bool better = (d == 1) ? (nsl > sl || sl == 0) : (nsl < sl || sl == 0);
+   if(better) {
+      int m = (int)PositionGetInteger(POSITION_MAGIC);
+      TR(m).PositionModify(tk, nsl, tp0);
+   }
 }
 
-bool ADXTrendSell() {
-   if(!UseADX || hADX == INVALID_HANDLE) return true;
+//+------------------------------------------------------------------+
+//| ADX — single function, cached per tick in gADXDir               |
+//| Returns 1=buy trend, -1=sell trend, 0=flat or disabled          |
+//+------------------------------------------------------------------+
+int ADXDir() {
+   if(!UseADX || hADX == INVALID_HANDLE) return 0;
    double adx[], pdi[], mdi[];
    ArraySetAsSeries(adx, true);
    ArraySetAsSeries(pdi, true);
    ArraySetAsSeries(mdi, true);
-   if(CopyBuffer(hADX, 0, 0, 2, adx) < 2) return true;
-   if(CopyBuffer(hADX, 1, 0, 2, pdi) < 2) return true;
-   if(CopyBuffer(hADX, 2, 0, 2, mdi) < 2) return true;
-   return (adx[0] >= ADXMin && mdi[0] > pdi[0]);
+   if(CopyBuffer(hADX, 0, 0, 2, adx) < 2) return 0;
+   if(CopyBuffer(hADX, 1, 0, 2, pdi) < 2) return 0;
+   if(CopyBuffer(hADX, 2, 0, 2, mdi) < 2) return 0;
+   if(adx[0] < ADXMin) return 0;
+   return (pdi[0] > mdi[0]) ? 1 : -1;
 }
 
 //+------------------------------------------------------------------+
@@ -314,18 +325,9 @@ bool DoTP(int m, double req) {
    if(closeN <= 0) return true;
    for(int i = 0; i < closeN; i++) CloseByTicket(pTk[i]);
 
-   if(SKCount > 0 && SKBEPts > 0) {
-      for(int i = closeN; i < nP; i++) {
-         if(!PositionSelectByTicket(pTk[i])) continue;
-         double op  = PositionGetDouble(POSITION_PRICE_OPEN);
-         double sl  = PositionGetDouble(POSITION_SL);
-         double tp0 = PositionGetDouble(POSITION_TP);
-         int    d   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-         double nsl = op + d * SKBEPts * _Point;
-         bool better = (d == 1) ? (nsl > sl || sl == 0) : (nsl < sl || sl == 0);
-         if(better) TR(m).PositionModify(pTk[i], nsl, tp0);
-      }
-   }
+   if(SKCount > 0 && SKBEPts > 0)
+      for(int i = closeN; i < nP; i++) ApplyBESL(pTk[i], SKBEPts);
+
    return true;
 }
 
@@ -354,13 +356,11 @@ bool DoTPMulti(int &mgs[], double req) {
          }
       }
       int sz = ArraySize(allLTk);
-      for(int i = 0; i < sz - 1; i++)
-         for(int j = i + 1; j < sz; j++)
-            if(allLPf[j] < allLPf[i]) {
-               ulong  tu = allLTk[i]; allLTk[i] = allLTk[j]; allLTk[j] = tu;
-               double pu = allLPf[i]; allLPf[i] = allLPf[j]; allLPf[j] = pu;
-            }
-      if(sz > SelfAbs) ArrayResize(allLTk, SelfAbs);
+      SortPairsByPnl(allLTk, allLPf, sz, true);
+      if(sz > SelfAbs) {
+         ArrayResize(allLTk, SelfAbs);
+         ArrayResize(allLPf, SelfAbs);  // keep both arrays in sync
+      }
    }
 
    double totalLoss = 0;
@@ -381,16 +381,15 @@ bool DoTPMulti(int &mgs[], double req) {
       }
    }
    int psz = ArraySize(allPTk);
-   for(int i = 0; i < psz - 1; i++)
-      for(int j = i + 1; j < psz; j++)
-         if(allPPf[j] > allPPf[i]) {
-            ulong  tu = allPTk[i]; allPTk[i] = allPTk[j]; allPTk[j] = tu;
-            double pu = allPPf[i]; allPPf[i] = allPPf[j]; allPPf[j] = pu;
-         }
+   SortPairsByPnl(allPTk, allPPf, psz, false);
 
    int closeN = psz - SKCount;
    if(closeN <= 0) return true;
    for(int i = 0; i < closeN; i++) CloseByTicket(allPTk[i]);
+
+   if(SKCount > 0 && SKBEPts > 0)
+      for(int i = closeN; i < psz; i++) ApplyBESL(allPTk[i], SKBEPts);
+
    return true;
 }
 
@@ -431,16 +430,7 @@ void ChkBPK() {
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       double pp = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
       if(pp < BPKMinProfit) continue;
-      double op  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl  = PositionGetDouble(POSITION_SL);
-      double tp0 = PositionGetDouble(POSITION_TP);
-      int    d   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-      double nsl = op + d * BPKBEPts * _Point;
-      bool better = (d == 1) ? (nsl > sl || sl == 0) : (nsl < sl || sl == 0);
-      if(better) {
-         int m = (int)PositionGetInteger(POSITION_MAGIC);
-         TR(m).PositionModify(tk, nsl, tp0);
-      }
+      ApplyBESL(tk, BPKBEPts);
    }
 }
 
@@ -498,7 +488,7 @@ void ChkGrid3() {
 }
 
 //+------------------------------------------------------------------+
-//| M2 Dynamic — ADX-driven; uses trigger to switch helping side     |
+//| M2 Dynamic — uses cached gADXDir; switches direction on trigger  |
 //+------------------------------------------------------------------+
 void ChkM2() {
    if(!En2) return;
@@ -509,15 +499,14 @@ void ChkM2() {
    int dir = 0;
    if(gTrig.active) {
       if(gTrig.stoppedMagic == MAGIC_1) {
-         // M1 BUY stopped (price fell). Help M3 SELL until price climbs back above trigger.
+         // M1 BUY stopped. Help M3 SELL until price climbs back above trigger.
          dir = (bid >= gTrig.trigPrice) ? 1 : -1;
       } else {
-         // M3 SELL stopped (price rose). Help M1 BUY until price drops back below trigger.
+         // M3 SELL stopped. Help M1 BUY until price drops back below trigger.
          dir = (ask <= gTrig.trigPrice) ? -1 : 1;
       }
    } else {
-      if(ADXTrendBuy())       dir =  1;
-      else if(ADXTrendSell()) dir = -1;
+      dir = gADXDir;  // 0 when flat or UseADX=false — M2 stays idle
    }
    if(dir == 0) return;
 
@@ -539,30 +528,40 @@ void ChkM2() {
 
 //+------------------------------------------------------------------+
 //| Trigger — stops losing side; releases when it recovers           |
+//| Cooldown (TrigCoolSec) prevents immediate re-arm after release   |
 //+------------------------------------------------------------------+
 void ChkTrigger() {
    if(!gTrig.active) {
-      if(En1 && Count(MAGIC_1) > 0 && PNL(MAGIC_1) <= -LossTrig1) {
-         gTrig.active       = true;
-         gTrig.stoppedMagic = MAGIC_1;
-         gTrig.trigPrice    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         PrintFormat("[Trigger] M1 PNL=%.2f  trigPrice=%.5f", PNL(MAGIC_1), gTrig.trigPrice);
-         CM(MAGIC_2);
-         return;
+      if(TimeCurrent() < gTrigCoolEnd) return;  // within cooldown window
+
+      if(En1 && Count(MAGIC_1) > 0) {
+         double pnl1 = PNL(MAGIC_1);
+         if(pnl1 <= -LossTrig1) {
+            gTrig.active       = true;
+            gTrig.stoppedMagic = MAGIC_1;
+            gTrig.trigPrice    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            PrintFormat("[Trigger] M1 PNL=%.2f  trigPrice=%.5f", pnl1, gTrig.trigPrice);
+            CM(MAGIC_2);
+            return;
+         }
       }
-      if(En3 && Count(MAGIC_3) > 0 && PNL(MAGIC_3) <= -LossTrig3) {
-         gTrig.active       = true;
-         gTrig.stoppedMagic = MAGIC_3;
-         gTrig.trigPrice    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         PrintFormat("[Trigger] M3 PNL=%.2f  trigPrice=%.5f", PNL(MAGIC_3), gTrig.trigPrice);
-         CM(MAGIC_2);
-         return;
+      if(En3 && Count(MAGIC_3) > 0) {
+         double pnl3 = PNL(MAGIC_3);
+         if(pnl3 <= -LossTrig3) {
+            gTrig.active       = true;
+            gTrig.stoppedMagic = MAGIC_3;
+            gTrig.trigPrice    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            PrintFormat("[Trigger] M3 PNL=%.2f  trigPrice=%.5f", pnl3, gTrig.trigPrice);
+            CM(MAGIC_2);
+            return;
+         }
       }
    } else {
       if(PNL(gTrig.stoppedMagic) >= 0) {
          PrintFormat("[Trigger] M%d recovered — released",
                      gTrig.stoppedMagic == MAGIC_1 ? 1 : 3);
-         gTrig = {false, 0, 0.0};
+         gTrig         = {false, 0, 0.0};
+         gTrigCoolEnd  = TimeCurrent() + TrigCoolSec;
          CM(MAGIC_2);
       }
    }
@@ -585,7 +584,7 @@ void ShowDashboard() {
 
    string adxStr = "ADX:OFF";
    if(UseADX && hADX != INVALID_HANDLE)
-      adxStr = ADXTrendBuy() ? "ADX:UP" : ADXTrendSell() ? "ADX:DOWN" : "ADX:FLAT";
+      adxStr = (gADXDir == 1) ? "ADX:UP" : (gADXDir == -1) ? "ADX:DOWN" : "ADX:FLAT";
 
    Comment(StringFormat(
       "=== HybridPro V%s ===\n"
@@ -630,7 +629,9 @@ int OnInit() {
          { if(gLastSell == 0 || op > gLastSell) gLastSell = op; }
    }
 
-   gTrig = {false, 0, 0.0};
+   gTrig        = {false, 0, 0.0};
+   gTrigCoolEnd = 0;
+   gADXDir      = 0;
 
    PrintFormat("[Init] HybridPro V%s OK  M1=%d M2=%d M3=%d  LastBuy=%.5f LastSell=%.5f",
                EA_VER, Count(MAGIC_1), Count(MAGIC_2), Count(MAGIC_3), gLastBuy, gLastSell);
@@ -649,18 +650,16 @@ void OnDeinit(const int reason) {
 //| OnTick                                                           |
 //+------------------------------------------------------------------+
 void OnTick() {
-   ChkTrigger();   // evaluate loss triggers before any new orders
+   gADXDir = ADXDir();   // cache once — used by ChkM2 and ShowDashboard
 
-   ChkGrid1();     // M1 BUY grid
-   ChkGrid3();     // M3 SELL grid — opens simultaneously with M1 on first tick
-
-   ChkM2();        // M2 ADX dynamic helper
-
-   ChkSepTP();     // separate TP per magic
-   ChkPairTP();    // combined M1+M3 TP
-   ChkTotTP();     // combined M1+M2+M3 TP
-
-   ChkBPK();       // BPK breakeven SL
+   ChkTrigger();
+   ChkGrid1();
+   ChkGrid3();
+   ChkM2();
+   ChkSepTP();
+   ChkPairTP();
+   ChkTotTP();
+   ChkBPK();
    ShowDashboard();
 }
 //+------------------------------------------------------------------+

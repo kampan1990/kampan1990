@@ -90,7 +90,7 @@ int    hADX          = INVALID_HANDLE;
 int    gADXDir       = 0;       // cached per tick: 1=buy, -1=sell, 0=flat/off
 datetime gTrigCoolEnd = 0;      // earliest time trigger can re-arm after release
 
-TriggerState gTrig = {false, 0, 0.0};
+TriggerState gTrig;
 
 double gLastBuy  = 0.0;  // price of last M1 BUY opened (lowest in downward grid)
 double gLastSell = 0.0;  // price of last M3 SELL opened (highest in upward grid)
@@ -560,7 +560,7 @@ void ChkTrigger() {
       if(PNL(gTrig.stoppedMagic) >= 0) {
          PrintFormat("[Trigger] M%d recovered — released",
                      gTrig.stoppedMagic == MAGIC_1 ? 1 : 3);
-         gTrig         = {false, 0, 0.0};
+         gTrig.active = false; gTrig.stoppedMagic = 0; gTrig.trigPrice = 0.0;
          gTrigCoolEnd  = TimeCurrent() + TrigCoolSec;
          CM(MAGIC_2);
       }
@@ -629,7 +629,7 @@ int OnInit() {
          { if(gLastSell == 0 || op > gLastSell) gLastSell = op; }
    }
 
-   gTrig        = {false, 0, 0.0};
+   gTrig.active = false; gTrig.stoppedMagic = 0; gTrig.trigPrice = 0.0;
    gTrigCoolEnd = 0;
    gADXDir      = 0;
 

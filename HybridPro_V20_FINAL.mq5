@@ -116,6 +116,15 @@ input bool   UseBPK       = false;
 input double BPKMinProfit = 50.0;
 input int    BPKBEPts     = 10;
 
+input group "=== Runner (Best Positions Keeper) ==="
+input int    RunKeepN1    = 5;     // M1 runner slots (0=disable)
+input int    RunKeepN3    = 5;     // M3 runner slots (0=disable)
+input int    RunBEPts     = 10;    // BE SL offset pts when runner slots full
+input double TPRun1       = 50.0;  // TP target for M1 runners (USD)
+input double TPRun3       = 50.0;  // TP target for M3 runners (USD)
+input bool   UseTPAll     = true;  // TP All: close all non-runners at target
+input double TPAll        = 20.0;  // TP All target (USD, non-runner positions)
+
 input group "=== Spread ==="
 input int    MaxSpread    = 50;
 
@@ -136,6 +145,9 @@ TriggerState gTrig;
 
 double gLastBuy  = 0.0;
 double gLastSell = 0.0;
+
+ulong  gRunTk1[];   // M1 runner tickets (top RunKeepN1 by profit)
+ulong  gRunTk3[];   // M3 runner tickets (top RunKeepN3 by profit)
 
 double   gDailyLot1  = 0.0;
 double   gDailyLot2  = 0.0;
@@ -191,13 +203,16 @@ double PNL(int m) {
    return p;
 }
 
-double GrossProfit(int m) {
+// skipRun=true excludes runner positions (used by regular TP)
+// skipRun=false includes all (used by UpdateRunners to identify runners)
+double GrossProfit(int m, bool skipRun=true) {
    double p = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong tk = PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
       if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(skipRun && IsRunner(tk)) continue;
       double pp = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
       if(pp > 0) p += pp;
    }
@@ -236,7 +251,7 @@ int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
    return n;
 }
 
-int GetBestProfit(int m, int maxN, ulong &outTk[], double &outPf[]) {
+int GetBestProfit(int m, int maxN, ulong &outTk[], double &outPf[], bool skipRun=true) {
    int total = PositionsTotal();
    ulong  tk[]; ArrayResize(tk, total);
    double pf[]; ArrayResize(pf, total);
@@ -246,6 +261,7 @@ int GetBestProfit(int m, int maxN, ulong &outTk[], double &outPf[]) {
       if(!PositionSelectByTicket(t)) continue;
       if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(skipRun && IsRunner(t)) continue;
       double pp = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
       if(pp <= 0) continue;
       tk[c] = t; pf[c] = pp; c++;
@@ -271,6 +287,12 @@ void CM(int m) {
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       TR(m).PositionClose(tk, -1);
    }
+}
+
+bool IsRunner(ulong tk) {
+   for(int i = 0; i < ArraySize(gRunTk1); i++) if(gRunTk1[i] == tk) return true;
+   for(int i = 0; i < ArraySize(gRunTk3); i++) if(gRunTk3[i] == tk) return true;
+   return false;
 }
 
 bool HasPositionNearPrice(int m, int dir, double price, int gsPts) {
@@ -451,6 +473,77 @@ bool DoTPMulti(int &mgs[], double req) {
    return true;
 }
 
+//+------------------------------------------------------------------+
+//| Runner system                                                    |
+//+------------------------------------------------------------------+
+void UpdateRunners() {
+   // M1: top RunKeepN1 profitable positions (skipRun=false to see all)
+   ArrayResize(gRunTk1, 0);
+   if(RunKeepN1 > 0 && En1) {
+      ulong pTk[]; double pPf[];
+      int n = GetBestProfit(MAGIC_1, RunKeepN1, pTk, pPf, false);
+      ArrayResize(gRunTk1, n);
+      for(int i = 0; i < n; i++) gRunTk1[i] = pTk[i];
+      if(n >= RunKeepN1 && RunBEPts > 0)
+         for(int i = 0; i < n; i++) ApplyBESL(gRunTk1[i], RunBEPts);
+   }
+   // M3: top RunKeepN3 profitable positions
+   ArrayResize(gRunTk3, 0);
+   if(RunKeepN3 > 0 && En3) {
+      ulong pTk[]; double pPf[];
+      int n = GetBestProfit(MAGIC_3, RunKeepN3, pTk, pPf, false);
+      ArrayResize(gRunTk3, n);
+      for(int i = 0; i < n; i++) gRunTk3[i] = pTk[i];
+      if(n >= RunKeepN3 && RunBEPts > 0)
+         for(int i = 0; i < n; i++) ApplyBESL(gRunTk3[i], RunBEPts);
+   }
+}
+
+void ChkRunTP() {
+   // M1 runner TP — separate target, independent of regular TP
+   if(RunKeepN1 > 0 && ArraySize(gRunTk1) > 0) {
+      double rPNL = 0;
+      for(int i = 0; i < ArraySize(gRunTk1); i++) {
+         if(!PositionSelectByTicket(gRunTk1[i])) continue;
+         rPNL += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      }
+      if(rPNL >= TPRun1)
+         for(int i = 0; i < ArraySize(gRunTk1); i++) CloseByTicket(gRunTk1[i]);
+   }
+   // M3 runner TP
+   if(RunKeepN3 > 0 && ArraySize(gRunTk3) > 0) {
+      double rPNL = 0;
+      for(int i = 0; i < ArraySize(gRunTk3); i++) {
+         if(!PositionSelectByTicket(gRunTk3[i])) continue;
+         rPNL += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      }
+      if(rPNL >= TPRun3)
+         for(int i = 0; i < ArraySize(gRunTk3); i++) CloseByTicket(gRunTk3[i]);
+   }
+}
+
+void ChkTPAll() {
+   if(!UseTPAll) return;
+   // Sum PNL of all non-runner positions across all 3 magics
+   double p = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);
+      if(!PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(IsRunner(tk)) continue;
+      p += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+   }
+   if(p < TPAll) return;
+   // Close all non-runner positions immediately (runners stay open)
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);
+      if(!PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(IsRunner(tk)) continue;
+      CloseByTicket(tk);
+   }
+}
+
 void ChkSepTP() {
    if(!UseSepTP) return;
    if(En1 && Count(MAGIC_1)>0) DoTP(MAGIC_1, TP1);
@@ -502,7 +595,8 @@ void ChkGrid3() {
    int cnt=Count(MAGIC_3); if(cnt>=MaxGrid3) return;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    if(cnt==0){ if(OO(MAGIC_3,-1,GridLot(MAGIC_3,0))) gLastSell=bid; return; }
-   if(gLastSell>0 && bid-gLastSell>=GS3*_Point)
+   // Bidirectional: add SELL when price rises OR drops GS3 pts from last SELL
+   if(gLastSell>0 && MathAbs(bid-gLastSell)>=GS3*_Point)
       if(OO(MAGIC_3,-1,GridLot(MAGIC_3,cnt))) gLastSell=bid;
 }
 void ChkM2() {
@@ -785,6 +879,7 @@ int OnInit() {
    }
    gTrig.active=false; gTrig.stoppedMagic=0; gTrig.trigPrice=0.0;
    gTrigCoolEnd=0; gADXDir=0;
+   ArrayResize(gRunTk1, 0); ArrayResize(gRunTk3, 0);
    gBalanceHigh=AccountInfoDouble(ACCOUNT_BALANCE);
    RestoreDailyLots();
    PrintFormat("[Init] HybridPro V%s  M1=%d M2=%d M3=%d",
@@ -802,9 +897,12 @@ void OnTick(){
    double b=AccountInfoDouble(ACCOUNT_BALANCE);
    if(b>gBalanceHigh) gBalanceHigh=b;
    ChkDayRollover();
+   UpdateRunners();        // refresh runner arrays before any TP logic
    ChkTrigger();
    ChkGrid1(); ChkGrid3(); ChkM2();
    ChkSepTP(); ChkPairTP(); ChkTotTP();
+   ChkTPAll();             // close all non-runners when PNL >= TPAll
+   ChkRunTP();             // separate TP for runner positions
    ChkBPK();
    ShowDashboard();
 }

@@ -15,11 +15,14 @@
 #define PFX        "HP_"
 
 // ── Panel layout ────────────────────────────────────────────────────
-#define PW_OUT   304   // outer width  (incl. 3px borders each side)
-#define PW_IN    298   // inner content width
-#define SEC_H     52   // height of each magic section
-#define HDR_H     32   // header height
-#define STAT_H    58   // stats section height
+#define PW_OUT   316   // outer width
+#define PW_IN    310   // inner content width
+#define HDR_H     30   // header height
+#define TRIG_H    30   // trigger banner height
+#define MSEC_H    46   // M1/M3 section height
+#define M2R_H     26   // M2 row height
+#define STAT_H    52   // stats section height
+// PH = 3+HDR_H+2+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+STAT_H+3 = 247
 
 // ── Color palette ────────────────────────────────────────────────────
 #define CB_BORDER  C'42,55,95'
@@ -659,6 +662,18 @@ int GetPanelX() {
    return MathMax(5, cw - PanelX - PW_OUT);
 }
 
+double TotalLot(int m) {
+   double v = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);
+      if(!PositionSelectByTicket(tk)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      v += PositionGetDouble(POSITION_VOLUME);
+   }
+   return v;
+}
+
 //+------------------------------------------------------------------+
 //| Panel primitives                                                 |
 //+------------------------------------------------------------------+
@@ -687,7 +702,6 @@ color PnlClr(double v){
    if(v<-0.005) return CL_NEG;
    return CL_NEU;
 }
-
 string TFStr(ENUM_TIMEFRAMES tf) {
    switch(tf){
       case PERIOD_M1: return "M1"; case PERIOD_M5:  return "M5";
@@ -698,41 +712,103 @@ string TFStr(ENUM_TIMEFRAMES tf) {
    }
 }
 
-// Rectangle-based progress bar: background rect + filled rect
-void DrawBar(string id, int px, int x, int y, int cnt, int maxCnt, color acClr) {
-   int barW = 130;
-   int barH = 9;
-   Rect(PFX+id+"_PBG", px+x, y, barW, barH, CB_BAR_BG, CB_BAR_BG);
-   int fillW = (maxCnt>0) ? MathMax(1, MathMin(barW, (int)MathRound((double)cnt/maxCnt*barW))) : 0;
-   if(cnt>0 && fillW>0)
-      Rect(PFX+id+"_PFG", px+x, y, fillW, barH, acClr, acClr);
-   else
-      Rect(PFX+id+"_PFG", px+x, y, 1, barH, CB_BAR_BG, CB_BAR_BG);
+// Rect progress bar: background + fill
+void Bar(string id, int x, int y, int totalW, int h, int cnt, int maxCnt, color acClr) {
+   Rect(PFX+id+"_BG", x, y, totalW, h, CB_BAR_BG, CB_BAR_BG);
+   int fw = (maxCnt>0 && cnt>0) ? MathMax(2, MathMin(totalW, (int)MathRound((double)cnt/maxCnt*totalW))) : 0;
+   Rect(PFX+id+"_FG", x, y, (fw>0?fw:1), h, (fw>0?acClr:CB_BAR_BG), (fw>0?acClr:CB_BAR_BG));
 }
 
-// Draw one complete magic section — px = GetPanelX() result
-void DrawMagicSec(string id, int px, int sy,
+//+------------------------------------------------------------------+
+//| Magic section (M1 / M3)                                          |
+//+------------------------------------------------------------------+
+void DrawMagicSec(string id, int xi, int sy,
                   color acClr, color bgClr,
-                  string tag, string dirTxt, color dirClr,
-                  int cnt, int maxCnt, double pnl, double lotDay) {
-   int xi = px+3;
-   Rect(PFX+id+"_BG",  xi,    sy,   PW_IN, SEC_H, bgClr,  bgClr);
-   Rect(PFX+id+"_ACC", xi,    sy,   5,     SEC_H, acClr,  acClr);
-   Rect(PFX+id+"_HI",  xi+5,  sy,   PW_IN-5, 1,   C'25,32,58', C'25,32,58');
+                  string tag, string statusTxt, color statusClr,
+                  int cnt, int maxCnt,
+                  int runCnt, int runMax,
+                  double pnl, double openLot) {
+   // Section bg + left accent stripe
+   Rect(PFX+id+"_BG",  xi,   sy, PW_IN,   MSEC_H, bgClr, bgClr);
+   Rect(PFX+id+"_ACC", xi,   sy, 5,       MSEC_H, acClr, acClr);
+   Rect(PFX+id+"_HI",  xi+5, sy, PW_IN-5, 1,      C'20,28,52', C'20,28,52');
+
+   // ── Row 1: tag | status | runner badge | bar | cnt ──────────────
+   int r1 = sy+7;
+   Lbl(PFX+id+"_TAG",  xi+13, r1, tag,       acClr,     FN);
+   Lbl(PFX+id+"_STA",  xi+37, r1, statusTxt, statusClr, FN);
+
+   // Runner badge "★ 2/5"
+   string runTxt = StringFormat("★%d/%d", runCnt, runMax);
+   color  runClr = (runCnt >= runMax) ? CL_GOLD : (runCnt>0 ? C'200,170,60' : CL_INFO);
+   Lbl(PFX+id+"_RUN",  xi+128, r1, runTxt, runClr, FS, "Arial");
+
+   // Position bar (120px wide)
+   Bar(id, xi+172, r1+1, 96, 8, cnt, maxCnt, acClr);
+
+   // cnt/max right-aligned
+   Lbl(PFX+id+"_CNT",  xi+274, r1, StringFormat("%d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
+
+   // ── Row 2: PNL | open lot ────────────────────────────────────────
+   int r2 = sy+28;
+   Lbl(PFX+id+"_PL",   xi+13,  r2, "PNL",                            CL_INFO,       FS,  "Arial");
+   Lbl(PFX+id+"_PV",   xi+37,  r2, StringFormat("%+.2f $", pnl),      PnlClr(pnl),   FN);
+   Lbl(PFX+id+"_LL",   xi+160, r2, "Open",                           CL_INFO,       FXS, "Arial");
+   Lbl(PFX+id+"_LV",   xi+193, r2, StringFormat("%.2f lot", openLot), CL_CYAN,       FN);
+}
+
+//+------------------------------------------------------------------+
+//| M2 row                                                           |
+//+------------------------------------------------------------------+
+void DrawM2Row(int xi, int sy, string modeTxt, color modeClr,
+               int cnt, int maxCnt, double pnl) {
+   Rect(PFX+"M2_BG",  xi,   sy, PW_IN,   M2R_H, CB_M2, CB_M2);
+   Rect(PFX+"M2_ACC", xi,   sy, 5,       M2R_H, CA_M2, CA_M2);
+   Rect(PFX+"M2_HI",  xi+5, sy, PW_IN-5, 1,     C'20,28,52', C'20,28,52');
 
    int r1 = sy+8;
-   Lbl(PFX+id+"_TAG", xi+14, r1, tag,    acClr,    FN);
-   Lbl(PFX+id+"_DIR", xi+40, r1, dirTxt, dirClr,   FN);
-   DrawBar(id, xi, 118, r1, cnt, maxCnt, acClr);
-   Lbl(PFX+id+"_CNT", xi+255, r1,
-       StringFormat("%d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
+   Lbl(PFX+"M2_TAG",  xi+13,  r1, "M2",                             CA_M2,     FN);
+   Lbl(PFX+"M2_MOD",  xi+37,  r1, modeTxt,                          modeClr,   FN);
+   Lbl(PFX+"M2_CNT",  xi+210, r1, StringFormat("%d/%d", cnt,maxCnt), CL_INFO,   FS,  "Courier New");
+   Lbl(PFX+"M2_PNL",  xi+252, r1, StringFormat("%+.2f",pnl),         PnlClr(pnl), FN);
+}
 
-   int r2 = sy+30;
-   Lbl(PFX+id+"_PNLL", xi+14, r2, "PNL",                     CL_INFO,    FS, "Arial");
-   Lbl(PFX+id+"_PNLV", xi+40, r2, StringFormat("%+.2f $", pnl), PnlClr(pnl), FN);
-   Lbl(PFX+id+"_LOTL", xi+158, r2, "Lot/Day",                 CL_INFO,    FXS, "Arial");
-   Lbl(PFX+id+"_LOTV", xi+204, r2, StringFormat("%.2f",lotDay), CL_CYAN,   FN);
-   Lbl(PFX+id+"_LOTU", xi+250, r2, "lot",                     CL_INFO,    FXS, "Arial");
+//+------------------------------------------------------------------+
+//| Trigger banner                                                   |
+//+------------------------------------------------------------------+
+void DrawTrigBanner(int xi, int sy, int bw) {
+   string line1, line2;
+   color  bgClr, txtClr1, txtClr2;
+
+   if(gTrig.active) {
+      int stoppedNum = (gTrig.stoppedMagic == MAGIC_1) ? 1 : 3;
+      string helpDir = (gTrig.stoppedMagic == MAGIC_1) ? "SELL" : "BUY";
+      line1 = StringFormat("⛔  M%d STOPPED  |  M2 → %s assist", stoppedNum, helpDir);
+      line2 = StringFormat("Trigger price: %s", DoubleToString(gTrig.trigPrice, (int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS)));
+      bgClr   = C'40,10,12';
+      txtClr1 = CL_NEG;
+      txtClr2 = C'200,120,120';
+   } else if(TimeCurrent() < gTrigCoolEnd) {
+      int sec = (int)(gTrigCoolEnd - TimeCurrent());
+      line1 = StringFormat("◷  COOLDOWN  %d sec", sec);
+      line2 = "Monitoring for re-arm...";
+      bgClr   = C'38,30,8';
+      txtClr1 = C'255,185,50';
+      txtClr2 = C'180,140,60';
+   } else {
+      line1 = "✔   NORMAL MODE  —  ALL RUNNING";
+      line2 = "M1 ↕ BUY grid  |  M3 ↕ SELL grid  |  M2 ADX";
+      bgClr   = C'8,28,18';
+      txtClr1 = CL_POS;
+      txtClr2 = C'60,140,90';
+   }
+
+   Rect(PFX+"TRIG_BG", xi, sy, bw, TRIG_H, bgClr, bgClr);
+   Rect(PFX+"TRIG_LB", xi, sy, 4, TRIG_H,
+        gTrig.active ? CL_NEG : (TimeCurrent()<gTrigCoolEnd ? C'255,185,50' : CL_POS),
+        gTrig.active ? CL_NEG : (TimeCurrent()<gTrigCoolEnd ? C'255,185,50' : CL_POS));
+   Lbl(PFX+"TRIG_L1",  xi+10, sy+5,  line1, txtClr1, FN);
+   Lbl(PFX+"TRIG_L2",  xi+10, sy+20, line2, txtClr2, FXS, "Arial");
 }
 
 //+------------------------------------------------------------------+
@@ -742,108 +818,128 @@ void ShowDashboard() {
    if(!ShowPanel) return;
    if(MQLInfoInteger(MQL_TESTER)&&!MQLInfoInteger(MQL_VISUAL_MODE)) return;
 
-   int x  = GetPanelX();
-   int y  = PanelY;
-   int xi = x+3;   // inner X
+   int px = GetPanelX();
+   int py = PanelY;
+   int xi = px+3;
 
-   // ── Live data ──────────────────────────────────────────────────
+   // ── Live data ───────────────────────────────────────────────────
    double p1=PNL(MAGIC_1), p2=PNL(MAGIC_2), p3=PNL(MAGIC_3);
    int    c1=Count(MAGIC_1), c2=Count(MAGIC_2), c3=Count(MAGIC_3);
+   double l1=TotalLot(MAGIC_1), l2=TotalLot(MAGIC_2), l3=TotalLot(MAGIC_3);
+   double lDay = gDailyLot1+gDailyLot2+gDailyLot3;
    double tot   = p1+p2+p3;
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double bal    = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity= AccountInfoDouble(ACCOUNT_EQUITY);
+   double bal   = AccountInfoDouble(ACCOUNT_BALANCE);
    if(bal>gBalanceHigh) gBalanceHigh=bal;
    double dd = (gBalanceHigh>0 && equity<gBalanceHigh)
                ? (gBalanceHigh-equity)/gBalanceHigh*100.0 : 0.0;
    int spd = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
 
-   // ── Total panel height ──────────────────────────────────────────
-   // outer 3px border + hdr32 + 3×(sec52+sep1) + stat58 + 3px border
-   // = 3 + 32 + 2 + 3*(52+1) + 58 + 3 = 257
-   int PH = 3+HDR_H+2+3*(SEC_H+1)+STAT_H+3;  // = 257
+   // Runner counts
+   int r1cnt = ArraySize(gRunTk1);
+   int r3cnt = ArraySize(gRunTk3);
 
-   // ── Outer border ───────────────────────────────────────────────
-   Rect(PFX+"BORDER", x,   y,   PW_OUT, PH,   CB_BORDER, CB_BORDER);
-   Rect(PFX+"BG",     xi,  y+3, PW_IN,  PH-6, CB_BG,     CB_BG);
+   // M1 status
+   bool m1stopped = (gTrig.active && gTrig.stoppedMagic==MAGIC_1);
+   string m1sta = m1stopped ? "⛔ STOP" : "↕ BUY";
+   color  m1clr = m1stopped ? CL_NEG   : C'140,205,255';
 
-   // ── Header ─────────────────────────────────────────────────────
-   int hy = y+3;
-   Rect(PFX+"HDR_BG",   xi,  hy,      PW_IN, HDR_H,   CB_HDR,    CB_HDR);
-   Rect(PFX+"HDR_TOP",  xi,  hy,      PW_IN, 1,       C'70,108,210', C'70,108,210');
-   Rect(PFX+"HDR_LINE", xi,  hy+HDR_H,PW_IN, 2,       CB_HDR_LN, CB_HDR_LN);
-   Lbl(PFX+"HDR_TXT",  xi+12, hy+9, "⚡  HYBRID PRO  V"+EA_VER, CL_GOLD, FH);
-   string stf = _Symbol+" • "+TFStr(_Period);
-   Lbl(PFX+"HDR_STF",  xi+220, hy+11, stf, C'125,145,180', FS, "Arial");
+   // M3 status
+   bool m3stopped = (gTrig.active && gTrig.stoppedMagic==MAGIC_3);
+   string m3sta = m3stopped ? "⛔ STOP" : "↕ SELL";
+   color  m3clr = m3stopped ? CL_NEG   : C'255,195,130';
 
-   // ── Magic sections ─────────────────────────────────────────────
-   int sy1 = hy+HDR_H+2;
-   int sy2 = sy1+SEC_H+1;
-   int sy3 = sy2+SEC_H+1;
+   // M2 mode text
+   string m2mod; color m2mClr;
+   if(gTrig.active) {
+      if(gTrig.stoppedMagic==MAGIC_1){ m2mod="▼ SELL  ← assist M1"; m2mClr=C'255,130,130'; }
+      else                            { m2mod="▲ BUY   ← assist M3"; m2mClr=C'130,200,255'; }
+   } else if(gADXDir== 1){ m2mod="▲ BUY   (ADX trend)";  m2mClr=C'130,200,255'; }
+   else if(gADXDir==-1)  { m2mod="▼ SELL  (ADX trend)";  m2mClr=C'255,130,130'; }
+   else                  { m2mod="■ IDLE  (ADX flat)";   m2mClr=CL_NEU;         }
 
-   Rect(PFX+"SEP1", xi, sy1+SEC_H, PW_IN, 1, CB_SEP, CB_SEP);
-   Rect(PFX+"SEP2", xi, sy2+SEC_H, PW_IN, 1, CB_SEP, CB_SEP);
-   Rect(PFX+"SEP3", xi, sy3+SEC_H, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
+   // ── Panel height ────────────────────────────────────────────────
+   // 3 + HDR_H(30) + 2 + TRIG_H(30) + 1 + MSEC_H(46) + 1 + M2R_H(26) + 1 + MSEC_H(46) + 2 + STAT_H(52) + 3
+   int PH = 3+HDR_H+2+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+STAT_H+3;  // 247
 
-   // M2 direction
-   string m2dir; color m2clr;
-   if     (gADXDir== 1){ m2dir="▲ BUY";  m2clr=C'135,175,255'; }
-   else if(gADXDir==-1){ m2dir="▼ SELL"; m2clr=C'255,145,145'; }
-   else                 { m2dir="■ IDLE"; m2clr=C'110,115,140'; }
+   // ── Outer shell ─────────────────────────────────────────────────
+   Rect(PFX+"BORDER", px, py,         PW_OUT, PH,     CB_BORDER, CB_BORDER);
+   Rect(PFX+"BG",     xi, py+3,       PW_IN,  PH-6,   CB_BG,     CB_BG);
 
-   DrawMagicSec("M1", x, sy1, CA_M1, CB_M1,
-                "M1", "▲ BUY",  C'165,208,255', c1, MaxGrid1, p1, gDailyLot1);
-   DrawMagicSec("M2", x, sy2, CA_M2, CB_M2,
-                "M2", m2dir,     m2clr,          c2, MaxGrid2, p2, gDailyLot2);
-   DrawMagicSec("M3", x, sy3, CA_M3, CB_M3,
-                "M3", "▼ SELL", C'255,195,135', c3, MaxGrid3, p3, gDailyLot3);
+   // ── Header ──────────────────────────────────────────────────────
+   int hy = py+3;
+   Rect(PFX+"H_BG",   xi,    hy,        PW_IN, HDR_H, CB_HDR,        CB_HDR);
+   Rect(PFX+"H_TOP",  xi,    hy,        PW_IN, 2,     C'60,100,200', C'60,100,200');
+   Rect(PFX+"H_LINE", xi,    hy+HDR_H,  PW_IN, 2,     CB_HDR_LN,     CB_HDR_LN);
+   Lbl(PFX+"H_TXT",   xi+12, hy+8,   "⚡  HYBRID PRO  V"+EA_VER,  CL_GOLD, FH);
+   Lbl(PFX+"H_STF",   xi+235,hy+10,  _Symbol+" · "+TFStr(_Period), C'100,125,170', FS, "Arial");
 
-   // ── Stats section ──────────────────────────────────────────────
-   int stY = sy3+SEC_H+2;
-   Rect(PFX+"STAT_BG", xi, stY, PW_IN, STAT_H, CB_STAT, CB_STAT);
+   // ── Trigger banner ───────────────────────────────────────────────
+   int ty = hy+HDR_H+2;
+   DrawTrigBanner(xi, ty, PW_IN);
 
-   // Row 1 — Total float + Equity
+   // ── Section Y positions ──────────────────────────────────────────
+   int sy1 = ty+TRIG_H+1;          // M1
+   int s12  = sy1+MSEC_H;          // sep
+   int sy2  = s12+1;               // M2
+   int s23  = sy2+M2R_H;           // sep
+   int sy3  = s23+1;               // M3
+   int sBri = sy3+MSEC_H;          // bright sep
+   int stY  = sBri+2;              // stats
+
+   // Separators
+   Rect(PFX+"SEP12",  xi, s12,  PW_IN, 1, CB_SEP,    CB_SEP);
+   Rect(PFX+"SEP23",  xi, s23,  PW_IN, 1, CB_SEP,    CB_SEP);
+   Rect(PFX+"SEPBRI", xi, sBri, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
+
+   // ── Magic sections ───────────────────────────────────────────────
+   DrawMagicSec("M1", xi, sy1, CA_M1, CB_M1,
+                "M1", m1sta, m1clr, c1, MaxGrid1, r1cnt, RunKeepN1, p1, l1);
+   DrawM2Row   (xi, sy2, m2mod, m2mClr, c2, MaxGrid2, p2);
+   DrawMagicSec("M3", xi, sy3, CA_M3, CB_M3,
+                "M3", m3sta, m3clr, c3, MaxGrid3, r3cnt, RunKeepN3, p3, l3);
+
+   // ── Stats ────────────────────────────────────────────────────────
+   Rect(PFX+"ST_BG", xi, stY, PW_IN, STAT_H, CB_STAT, CB_STAT);
+   Rect(PFX+"ST_HI", xi, stY, PW_IN, 1,      CB_SEP_HI, CB_SEP_HI);
+
+   // Vertical divider
+   Rect(PFX+"VDIV", xi+156, stY+4, 1, STAT_H-8, C'28,36,62', C'28,36,62');
+
+   // Col-left: Float + DD + ADX
+   int cl = xi+10;
    int sr1 = stY+6;
-   Lbl(PFX+"TOT_L",  xi+12, sr1, "FLOAT",                    CL_INFO,  FS, "Arial");
-   Lbl(PFX+"TOT_V",  xi+52, sr1, StringFormat("%+.2f $", tot), PnlClr(tot), 11);
-   Rect(PFX+"VDIV1", xi+162, sr1+1, 1, 22, C'30,38,65', C'30,38,65');
-   Lbl(PFX+"EQ_L",   xi+170, sr1, "EQUITY",                   CL_INFO,  FS, "Arial");
-   Lbl(PFX+"EQ_V",   xi+212, sr1, StringFormat("$%.0f", equity), CL_BRIGHT, FN);
+   Lbl(PFX+"FL_L",   cl,    sr1,    "FLOAT",                    CL_INFO,     FS,  "Arial");
+   Lbl(PFX+"FL_V",   cl+48, sr1,    StringFormat("%+.2f $",tot), PnlClr(tot), 11);
 
-   // Row 2 — DD + Spread
-   int sr2 = stY+26;
+   int sr2 = stY+23;
    color ddClr = (dd>=10)?CL_NEG:(dd>=5)?C'255,165,0':CL_NEU;
-   Lbl(PFX+"DD_L",   xi+12, sr2, "Drawdown",               CL_INFO,  FS, "Arial");
-   Lbl(PFX+"DD_V",   xi+68, sr2, StringFormat("%.2f%%",dd), ddClr,    FN);
-   Rect(PFX+"VDIV2", xi+162, sr2+1, 1, 20, C'30,38,65', C'30,38,65');
-   Lbl(PFX+"SPD_L",  xi+170, sr2, "Spread",                 CL_INFO,  FS, "Arial");
-   color spdClr=(spd>MaxSpread)?CL_NEG:CL_NEU;
-   Lbl(PFX+"SPD_V",  xi+212, sr2, StringFormat("%d pts",spd), spdClr,  FN);
+   Lbl(PFX+"DD_L",   cl,    sr2,    "DD",                       CL_INFO,  FS,  "Arial");
+   Lbl(PFX+"DD_V",   cl+22, sr2,    StringFormat("%.2f%%",dd),  ddClr,    FN);
 
-   // Row 3 — ADX + Trigger/Status
-   int sr3 = stY+44;
+   int sr3 = stY+39;
    string adxTxt; color adxClr;
-   if(!UseADX||hADX==INVALID_HANDLE){ adxTxt="ADX ■ OFF";   adxClr=C'80,90,115';  }
-   else if(gADXDir== 1)             { adxTxt="ADX ▲ UP";    adxClr=CL_POS;         }
-   else if(gADXDir==-1)             { adxTxt="ADX ▼ DOWN";  adxClr=CL_NEG;         }
-   else                              { adxTxt="ADX ▬ FLAT";  adxClr=CL_NEU;         }
-   Lbl(PFX+"ADX_V", xi+12, sr3, adxTxt, adxClr, FN);
+   if(!UseADX||hADX==INVALID_HANDLE){ adxTxt="ADX OFF";   adxClr=C'70,80,110'; }
+   else if(gADXDir== 1)             { adxTxt="ADX ▲ UP";  adxClr=CL_POS;       }
+   else if(gADXDir==-1)             { adxTxt="ADX ▼ DN";  adxClr=CL_NEG;       }
+   else                             { adxTxt="ADX ▬ --";  adxClr=CL_NEU;       }
+   Lbl(PFX+"ADX_V",  cl,    sr3,    adxTxt,                     adxClr,   FN);
 
-   string trigTxt; color trigClr;
-   if(gTrig.active){
-      trigTxt=StringFormat("⛔ M%d STOP", gTrig.stoppedMagic==MAGIC_1?1:3);
-      trigClr=CL_NEG;
-   } else if(TimeCurrent()<gTrigCoolEnd){
-      trigTxt=StringFormat("◷ COOL %ds",(int)(gTrigCoolEnd-TimeCurrent()));
-      trigClr=C'255,165,0';
-   } else {
-      trigTxt="✔ Running";
-      trigClr=CL_POS;
-   }
-   Lbl(PFX+"TRIG_V", xi+170, sr3, trigTxt, trigClr, FN);
+   // Col-right: Equity + Spread + Lot/Day
+   int cr = xi+165;
+   Lbl(PFX+"EQ_L",   cr,     sr1,   "EQUITY",                            CL_INFO,   FS,  "Arial");
+   Lbl(PFX+"EQ_V",   cr+52,  sr1,   StringFormat("$%.0f",equity),         CL_BRIGHT, FN);
 
-   // Footer timestamp
-   Lbl(PFX+"TIME", xi+PW_IN-62, stY+STAT_H-14,
-       TimeToString(TimeCurrent(), TIME_MINUTES), CL_TIME, FXS, "Arial");
+   color spdClr = (spd>MaxSpread) ? CL_NEG : CL_NEU;
+   Lbl(PFX+"SP_L",   cr,     sr2,   "Spread",                            CL_INFO,   FS,  "Arial");
+   Lbl(PFX+"SP_V",   cr+52,  sr2,   StringFormat("%d pt",spd),            spdClr,    FN);
+
+   Lbl(PFX+"LD_L",   cr,     sr3,   "Lot/Day",                           CL_INFO,   FS,  "Arial");
+   Lbl(PFX+"LD_V",   cr+52,  sr3,   StringFormat("%.2f lot",lDay),        CL_CYAN,   FN);
+
+   // Timestamp
+   Lbl(PFX+"TIME",   xi+PW_IN-58, stY+STAT_H-13,
+       TimeToString(TimeCurrent(),TIME_MINUTES), CL_TIME, FXS, "Arial");
 
    ChartRedraw();
 }

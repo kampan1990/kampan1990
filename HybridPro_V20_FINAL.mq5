@@ -74,6 +74,7 @@ input double Lot1         = 0.01;
 input double Lot2         = 0.01;
 input double Lot3         = 0.01;
 input double LotMult1     = 1.0;
+input double LotMult2     = 1.0;
 input double LotMult3     = 1.0;
 
 input group "=== Grid Spacing (points) ==="
@@ -481,7 +482,7 @@ void ChkBPK() {
 
 double GridLot(int m, int level) {
    double base = (m==MAGIC_1)?Lot1:(m==MAGIC_2)?Lot2:Lot3;
-   double mult = (m==MAGIC_1)?LotMult1:(m==MAGIC_3)?LotMult3:1.0;
+   double mult = (m==MAGIC_1)?LotMult1:(m==MAGIC_2)?LotMult2:LotMult3;
    return NLot(base*MathPow(mult,(double)level));
 }
 
@@ -491,7 +492,8 @@ void ChkGrid1() {
    int cnt=Count(MAGIC_1); if(cnt>=MaxGrid1) return;
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    if(cnt==0){ if(OO(MAGIC_1,1,GridLot(MAGIC_1,0))) gLastBuy=ask; return; }
-   if(gLastBuy>0 && gLastBuy-ask>=GS1*_Point)
+   // Bidirectional: add BUY when price drops OR rises GS1 pts from last BUY
+   if(gLastBuy>0 && MathAbs(ask-gLastBuy)>=GS1*_Point)
       if(OO(MAGIC_1,1,GridLot(MAGIC_1,cnt))) gLastBuy=ask;
 }
 void ChkGrid3() {
@@ -766,16 +768,20 @@ int OnInit() {
       if(hADX==INVALID_HANDLE) Print("[Init] ADX handle fail");
    }
    gLastBuy=0.0; gLastSell=0.0;
+   datetime latestBuyTime=0, latestSellTime=0;
    for(int i=PositionsTotal()-1;i>=0;i--){
       ulong tk=PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       int m=(int)PositionGetInteger(POSITION_MAGIC);
       double op=PositionGetDouble(POSITION_PRICE_OPEN);
+      datetime ot=(datetime)PositionGetInteger(POSITION_TIME);
+      // M1 bidirectional: restore as most-recently opened position
       if(m==MAGIC_1&&PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
-         { if(gLastBuy==0||op<gLastBuy) gLastBuy=op; }
+         { if(ot>latestBuyTime){ latestBuyTime=ot; gLastBuy=op; } }
+      // M3 upward grid: restore as most-recently opened position
       if(m==MAGIC_3&&PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_SELL)
-         { if(gLastSell==0||op>gLastSell) gLastSell=op; }
+         { if(ot>latestSellTime){ latestSellTime=ot; gLastSell=op; } }
    }
    gTrig.active=false; gTrig.stoppedMagic=0; gTrig.trigPrice=0.0;
    gTrigCoolEnd=0; gADXDir=0;

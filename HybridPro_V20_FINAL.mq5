@@ -106,7 +106,7 @@ input bool   UseTotTP     = true;
 input double TPTot        = 15.0;
 input bool   UsePairTP    = true;
 input double TPPair       = 10.0;
-input int    SelfAbs      = 1;
+input int    SelfAbs      = 0;   // max losers absorbed per TP (0=absorb all affordable)
 input int    SKCount      = 1;
 input int    SKBEPts      = 5;
 
@@ -361,21 +361,41 @@ bool OO(int m, int dir, double lot) {
 }
 
 //+------------------------------------------------------------------+
+//| TP helpers                                                       |
+//+------------------------------------------------------------------+
+// Find how many losers (worst-first, already sorted) can be absorbed
+// while keeping: grossProfit >= req + running_loss
+// Cap: SelfAbs > 0 means max SelfAbs at a time; 0 = absorb all affordable
+int CalcAbsorbN(double &lPf[], int total, double grossProfit, double req) {
+   int cap = (SelfAbs > 0) ? SelfAbs : total;
+   int n = 0;
+   double running = 0.0;
+   for(int i = 0; i < total && n < cap; i++) {
+      double newRunning = running + MathAbs(lPf[i]);
+      if(grossProfit < req + newRunning) break;
+      running = newRunning;
+      n++;
+   }
+   return n;
+}
+
+//+------------------------------------------------------------------+
 //| TP                                                               |
 //+------------------------------------------------------------------+
 bool DoTP(int m, double req) {
    double gp = GrossProfit(m);
-   if(gp <= 0) return false;
-   ulong lTk[]; double lPf[]; double totalLoss = 0.0; int nLoss = 0;
-   if(SelfAbs > 0) {
-      nLoss = GetWorstLoss(m, SelfAbs, lTk, lPf);
-      for(int i = 0; i < nLoss; i++) totalLoss += MathAbs(lPf[i]);
-   }
-   if(gp < req + totalLoss) return false;
+   if(gp < req) return false;
+   // Collect ALL losers worst-first
+   ulong lTk[]; double lPf[];
+   int nAll = GetWorstLoss(m, 9999, lTk, lPf);
+   int absN = CalcAbsorbN(lPf, nAll, gp, req);
+   // absN=0 is OK if there are no losers — still take TP on winners
    ulong pTk[]; double pPf[];
    int nP = GetBestProfit(m, 999, pTk, pPf);
    if(nP == 0) return false;
-   for(int i = 0; i < nLoss; i++) CloseByTicket(lTk[i]);
+   // Close affordable losers first (worst to least bad)
+   for(int i = 0; i < absN; i++) CloseByTicket(lTk[i]);
+   // Close winners (keep SKCount safest ones with BE SL)
    int closeN = nP - SKCount;
    if(closeN <= 0) return true;
    for(int i = 0; i < closeN; i++) CloseByTicket(pTk[i]);
@@ -388,27 +408,24 @@ bool DoTPMulti(int &mgs[], double req) {
    int nm = ArraySize(mgs); if(nm == 0) return false;
    double totalGP = 0;
    for(int mi = 0; mi < nm; mi++) totalGP += GrossProfit(mgs[mi]);
-   if(totalGP <= 0) return false;
+   if(totalGP < req) return false;
+   // Collect ALL losers from all magics, sort worst-first
    ulong allLTk[]; double allLPf[];
    ArrayResize(allLTk, 0); ArrayResize(allLPf, 0);
-   if(SelfAbs > 0) {
-      for(int mi = 0; mi < nm; mi++) {
-         ulong lTk[]; double lPf[];
-         int n = GetWorstLoss(mgs[mi], SelfAbs, lTk, lPf);
-         for(int j = 0; j < n; j++) {
-            int sz = ArraySize(allLTk);
-            ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
-            allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
-         }
+   for(int mi = 0; mi < nm; mi++) {
+      ulong lTk[]; double lPf[];
+      int n = GetWorstLoss(mgs[mi], 9999, lTk, lPf);
+      for(int j = 0; j < n; j++) {
+         int sz = ArraySize(allLTk);
+         ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
+         allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
       }
-      int sz = ArraySize(allLTk);
-      SortPairsByPnl(allLTk, allLPf, sz, true);
-      if(sz > SelfAbs) { ArrayResize(allLTk, SelfAbs); ArrayResize(allLPf, SelfAbs); }
    }
-   double totalLoss = 0;
-   for(int i = 0; i < ArraySize(allLTk); i++) totalLoss += MathAbs(allLPf[i]);
-   if(totalGP < req + totalLoss) return false;
-   for(int i = 0; i < ArraySize(allLTk); i++) CloseByTicket(allLTk[i]);
+   int totalL = ArraySize(allLTk);
+   SortPairsByPnl(allLTk, allLPf, totalL, true);  // worst first
+   // Find how many we can absorb
+   int absN = CalcAbsorbN(allLPf, totalL, totalGP, req);
+   // Collect all profitable positions
    ulong allPTk[]; double allPPf[];
    ArrayResize(allPTk, 0); ArrayResize(allPPf, 0);
    for(int mi = 0; mi < nm; mi++) {
@@ -420,8 +437,11 @@ bool DoTPMulti(int &mgs[], double req) {
          allPTk[sz] = pTk[j]; allPPf[sz] = pPf[j];
       }
    }
+   if(ArraySize(allPTk) == 0) return false;
+   // Execute: close losers then winners
+   for(int i = 0; i < absN; i++) CloseByTicket(allLTk[i]);
    int psz = ArraySize(allPTk);
-   SortPairsByPnl(allPTk, allPPf, psz, false);
+   SortPairsByPnl(allPTk, allPPf, psz, false);  // best-profit first
    int closeN = psz - SKCount;
    if(closeN <= 0) return true;
    for(int i = 0; i < closeN; i++) CloseByTicket(allPTk[i]);

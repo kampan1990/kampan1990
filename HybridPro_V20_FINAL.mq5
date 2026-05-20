@@ -547,21 +547,48 @@ void ChkTPAll() {
    }
 }
 
-void ChkSepTP() {
-   if(!UseSepTP) return;
-   if(En1 && Count(MAGIC_1)>0) DoTP(MAGIC_1, TP1);
-   if(En2 && Count(MAGIC_2)>0) DoTP(MAGIC_2, TP2);
-   if(En3 && Count(MAGIC_3)>0) DoTP(MAGIC_3, TP3);
+// TP priority: TotTP → PairTP → SepTP
+// Higher-priority TP always runs first; SepTP only fires when combined TP can't.
+// This prevents SepTP from consuming M1 profit that M3 needs for PairTP.
+// All condition checks use PNLNoRun (excludes runners) to match DoTPMulti logic.
+void ChkAllTP() {
+   // ── Priority 1: TotTP (M1+M2+M3) ─────────────────────────────────
+   if(UseTotTP) {
+      double totNR = PNLNoRun(MAGIC_1)+PNLNoRun(MAGIC_2)+PNLNoRun(MAGIC_3);
+      if(totNR >= TPTot) {
+         int mgs[]={MAGIC_1,MAGIC_2,MAGIC_3};
+         if(DoTPMulti(mgs, TPTot)) return;
+      }
+   }
+   // ── Priority 2: PairTP (M1+M3) ────────────────────────────────────
+   if(UsePairTP) {
+      double pairNR = PNLNoRun(MAGIC_1)+PNLNoRun(MAGIC_3);
+      if(pairNR >= TPPair) {
+         int mgs[]={MAGIC_1,MAGIC_3};
+         if(DoTPMulti(mgs, TPPair)) return;
+      }
+   }
+   // ── Priority 3: SepTP (individual magic) ──────────────────────────
+   // Only runs when combined TP above didn't fire.
+   if(UseSepTP) {
+      if(En1 && Count(MAGIC_1)>0) DoTP(MAGIC_1, TP1);
+      if(En2 && Count(MAGIC_2)>0) DoTP(MAGIC_2, TP2);
+      if(En3 && Count(MAGIC_3)>0) DoTP(MAGIC_3, TP3);
+   }
 }
-void ChkPairTP() {
-   if(!UsePairTP) return;
-   if(PNL(MAGIC_1)+PNL(MAGIC_3) < TPPair) return;
-   int mgs[]={MAGIC_1,MAGIC_3}; DoTPMulti(mgs,TPPair);
-}
-void ChkTotTP() {
-   if(!UseTotTP) return;
-   if(PNL(MAGIC_1)+PNL(MAGIC_2)+PNL(MAGIC_3) < TPTot) return;
-   int mgs[]={MAGIC_1,MAGIC_2,MAGIC_3}; DoTPMulti(mgs,TPTot);
+
+// PNL excluding runner positions (used for TP condition checks)
+double PNLNoRun(int m) {
+   double p = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);
+      if(!PositionSelectByTicket(tk)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(IsRunner(tk)) continue;
+      p += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+   }
+   return p;
 }
 
 void ChkBPK() {
@@ -996,7 +1023,7 @@ void OnTick(){
    UpdateRunners();        // refresh runner arrays before any TP logic
    ChkTrigger();
    ChkGrid1(); ChkGrid3(); ChkM2();
-   ChkSepTP(); ChkPairTP(); ChkTotTP();
+   ChkAllTP();             // TotTP → PairTP → SepTP (priority order)
    ChkTPAll();             // close all non-runners when PNL >= TPAll
    ChkRunTP();             // separate TP for runner positions
    ChkBPK();

@@ -547,25 +547,50 @@ void ChkAllTP() {
 }
 
 //+------------------------------------------------------------------+
-//| TP All — close all non-runner positions when combined net >= TPAll|
+//| TP All — close all non-runner positions when combined CGP >= TPAll|
+//| Uses closeableGP (same safe condition as DoTP) not net PNL       |
 //+------------------------------------------------------------------+
 void ChkTPAll() {
    if(!UseTPAll) return;
-   double p = 0;
-   for(int i = PositionsTotal()-1; i >= 0; i--) {
-      ulong tk = PositionGetTicket(i);
-      if(!PositionSelectByTicket(tk)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(IsRunner(tk)) continue;
-      p += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+
+   // Condition: combined closeable GP across all 3 magics >= TPAll
+   double totalCGP = GetCloseableGP(MAGIC_1)
+                   + GetCloseableGP(MAGIC_2)
+                   + GetCloseableGP(MAGIC_3);
+   if(totalCGP < TPAll) return;
+
+   // Collect all losers globally, absorb what CGP can safely cover
+   int    mgs[3]; mgs[0]=MAGIC_1; mgs[1]=MAGIC_2; mgs[2]=MAGIC_3;
+   ulong  allLTk[]; double allLPf[];
+   ArrayResize(allLTk, 0); ArrayResize(allLPf, 0);
+   for(int mi = 0; mi < 3; mi++) {
+      ulong lTk[]; double lPf[];
+      int n = GetWorstLoss(mgs[mi], 9999, lTk, lPf);
+      for(int j = 0; j < n; j++) {
+         int sz = ArraySize(allLTk);
+         ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
+         allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
+      }
    }
-   if(p < TPAll) return;
-   for(int i = PositionsTotal()-1; i >= 0; i--) {
-      ulong tk = PositionGetTicket(i);
-      if(!PositionSelectByTicket(tk)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(IsRunner(tk)) continue;
-      CloseByTicket(tk);
+   int totalL = ArraySize(allLTk);
+   SortPairsByPnl(allLTk, allLPf, totalL, true);
+
+   int cap = (AbsorbN > 0) ? MathMin(AbsorbN, totalL) : totalL;
+   int absN = 0; double runLoss = 0;
+   for(int i = 0; i < cap; i++) {
+      double d = runLoss + MathAbs(allLPf[i]);
+      if(totalCGP < TPAll + d) break;
+      runLoss = d; absN++;
+   }
+   for(int i = 0; i < absN; i++) CloseByTicket(allLTk[i]);
+
+   // Close non-runner winners (SKCount survivors get BE SL)
+   for(int mi = 0; mi < 3; mi++) {
+      ulong pTk[]; double pPf[];
+      int nP = GetBestProfit(mgs[mi], 999, pTk, pPf);
+      for(int i = SKCount; i < nP; i++) CloseByTicket(pTk[i]);
+      if(SKCount > 0 && SKBEPts > 0)
+         for(int i = 0; i < MathMin(SKCount, nP); i++) ApplyBESL(pTk[i], SKBEPts);
    }
 }
 

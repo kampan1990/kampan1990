@@ -110,7 +110,7 @@ input bool   UseTotTP     = true;
 input double TPTot        = 15.0;
 input bool   UsePairTP    = true;
 input double TPPair       = 10.0;
-input int    SelfAbs      = 0;   // max losers absorbed per TP (0=absorb all affordable)
+input int    SelfAbs      = 0;   // reserved (not used — all losers always closed with winners)
 input int    SKCount      = 1;
 input int    SKBEPts      = 5;
 
@@ -387,71 +387,44 @@ bool OO(int m, int dir, double lot) {
 }
 
 //+------------------------------------------------------------------+
-//| TP helpers                                                       |
+//| TP — safe close: condition uses NET PNL, always closes ALL losers|
 //+------------------------------------------------------------------+
-// Find how many losers (worst-first, already sorted) can be absorbed
-// while keeping: grossProfit >= req + running_loss
-// Cap: SelfAbs > 0 means max SelfAbs at a time; 0 = absorb all affordable
-int CalcAbsorbN(double &lPf[], int total, double grossProfit, double req) {
-   int cap = (SelfAbs > 0) ? SelfAbs : total;
-   int n = 0;
-   double running = 0.0;
-   for(int i = 0; i < total && n < cap; i++) {
-      double newRunning = running + MathAbs(lPf[i]);
-      if(grossProfit < req + newRunning) break;
-      running = newRunning;
-      n++;
-   }
-   return n;
-}
-
-//+------------------------------------------------------------------+
-//| TP                                                               |
-//+------------------------------------------------------------------+
+// DoTP: fire only when net PNL (excl. runners) >= req.
+// Closes ALL losing positions first, then all winning positions
+// except the top SKCount survivors (which get a BE stop loss).
+// This prevents the "close winners, leave losers" trap.
 bool DoTP(int m, double req) {
-   double gp = GrossProfit(m);
-   if(gp < req) return false;
-   // Collect ALL losers worst-first
+   if(PNLNoRun(m) < req) return false;
+   // Close all losing positions (runners excluded by GetWorstLoss skipping them implicitly
+   // since runners are always profitable)
    ulong lTk[]; double lPf[];
-   int nAll = GetWorstLoss(m, 9999, lTk, lPf);
-   int absN = CalcAbsorbN(lPf, nAll, gp, req);
-   // absN=0 is OK if there are no losers — still take TP on winners
+   int nL = GetWorstLoss(m, 9999, lTk, lPf);
+   for(int i = 0; i < nL; i++) CloseByTicket(lTk[i]);
+   // Collect winning positions (runner-excluded), sorted best-profit first
    ulong pTk[]; double pPf[];
-   int nP = GetBestProfit(m, 999, pTk, pPf);
-   if(nP == 0) return false;
-   // Close affordable losers first (worst to least bad)
-   for(int i = 0; i < absN; i++) CloseByTicket(lTk[i]);
-   // Close winners (keep SKCount safest ones with BE SL)
-   int closeN = nP - SKCount;
-   if(closeN <= 0) return true;
-   for(int i = 0; i < closeN; i++) CloseByTicket(pTk[i]);
+   int nP = GetBestProfit(m, 999, pTk, pPf);   // skipRun=true default
+   // Close all winners except top SKCount survivors; apply BE to survivors
+   for(int i = SKCount; i < nP; i++) CloseByTicket(pTk[i]);
    if(SKCount > 0 && SKBEPts > 0)
-      for(int i = closeN; i < nP; i++) ApplyBESL(pTk[i], SKBEPts);
+      for(int i = 0; i < MathMin(SKCount, nP); i++) ApplyBESL(pTk[i], SKBEPts);
    return true;
 }
 
+// DoTPMulti: same safe logic across multiple magics.
 bool DoTPMulti(int &mgs[], double req) {
-   int nm = ArraySize(mgs); if(nm == 0) return false;
-   double totalGP = 0;
-   for(int mi = 0; mi < nm; mi++) totalGP += GrossProfit(mgs[mi]);
-   if(totalGP < req) return false;
-   // Collect ALL losers from all magics, sort worst-first
-   ulong allLTk[]; double allLPf[];
-   ArrayResize(allLTk, 0); ArrayResize(allLPf, 0);
+   int nm = ArraySize(mgs);
+   if(nm == 0) return false;
+   // Check combined net PNL (runner-excluded) across all magics
+   double totNR = 0;
+   for(int mi = 0; mi < nm; mi++) totNR += PNLNoRun(mgs[mi]);
+   if(totNR < req) return false;
+   // Close ALL losers across all magics
    for(int mi = 0; mi < nm; mi++) {
       ulong lTk[]; double lPf[];
       int n = GetWorstLoss(mgs[mi], 9999, lTk, lPf);
-      for(int j = 0; j < n; j++) {
-         int sz = ArraySize(allLTk);
-         ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
-         allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
-      }
+      for(int j = 0; j < n; j++) CloseByTicket(lTk[j]);
    }
-   int totalL = ArraySize(allLTk);
-   SortPairsByPnl(allLTk, allLPf, totalL, true);  // worst first
-   // Find how many we can absorb
-   int absN = CalcAbsorbN(allLPf, totalL, totalGP, req);
-   // Collect all profitable positions
+   // Collect all winners (runner-excluded) across all magics, sort best-first
    ulong allPTk[]; double allPPf[];
    ArrayResize(allPTk, 0); ArrayResize(allPPf, 0);
    for(int mi = 0; mi < nm; mi++) {
@@ -463,16 +436,13 @@ bool DoTPMulti(int &mgs[], double req) {
          allPTk[sz] = pTk[j]; allPPf[sz] = pPf[j];
       }
    }
-   if(ArraySize(allPTk) == 0) return false;
-   // Execute: close losers then winners
-   for(int i = 0; i < absN; i++) CloseByTicket(allLTk[i]);
    int psz = ArraySize(allPTk);
-   SortPairsByPnl(allPTk, allPPf, psz, false);  // best-profit first
-   int closeN = psz - SKCount;
-   if(closeN <= 0) return true;
-   for(int i = 0; i < closeN; i++) CloseByTicket(allPTk[i]);
+   if(psz == 0) return true;   // only losers existed, already closed above
+   SortPairsByPnl(allPTk, allPPf, psz, false);   // best-profit first
+   // Close all winners except top SKCount survivors
+   for(int i = SKCount; i < psz; i++) CloseByTicket(allPTk[i]);
    if(SKCount > 0 && SKBEPts > 0)
-      for(int i = closeN; i < psz; i++) ApplyBESL(allPTk[i], SKBEPts);
+      for(int i = 0; i < MathMin(SKCount, psz); i++) ApplyBESL(allPTk[i], SKBEPts);
    return true;
 }
 

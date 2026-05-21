@@ -102,15 +102,18 @@ input double          ADXMin  = 20.0;
 
 input group "=== Take Profit ==="
 input bool   UseSepTP     = true;
-input double TP1          = 5.0;
-input double TP2          = 5.0;
-input double TP3          = 5.0;
-input bool   UseTotTP     = true;
-input double TPTot        = 15.0;
+input double TP1          = 5.0;   // SepTP target M1 (USD)
+input double TP2          = 5.0;   // SepTP target M2 (USD)
+input double TP3          = 5.0;   // SepTP target M3 (USD)
 input bool   UsePairTP    = true;
-input double TPPair       = 10.0;
-input int    SKCount      = 1;    // survivors kept open with BE SL after TP fires
-input int    SKBEPts      = 5;    // BE SL offset (points) for survivors
+input double TPPair       = 10.0;  // PairTP target — any 2-magic combo (USD)
+input bool   UseTotTP     = true;
+input double TPTot        = 15.0;  // TotTP target — all 3 magics combined (USD)
+// AbsorbN: max losers closed per TP event (0 = absorb as many as GP allows)
+// Realized net is always >= TP target regardless of this setting.
+input int    AbsorbN      = 0;
+input int    SKCount      = 1;     // survivors kept open with BE SL per magic
+input int    SKBEPts      = 5;     // BE SL offset (points) for survivors
 
 input group "=== BPK Breakeven ==="
 input bool   UseBPK       = false;
@@ -192,7 +195,7 @@ int Count(int m) {
    return c;
 }
 
-// Full PNL including runners (used for trigger checks and dashboard display)
+// Full PNL including runners (trigger checks, dashboard)
 double PNL(int m) {
    double p = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -200,21 +203,6 @@ double PNL(int m) {
       if(!PositionSelectByTicket(tk)) continue;
       if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      p += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-   }
-   return p;
-}
-
-// Net PNL excluding runner positions — used for all TP condition checks
-// so that runner profits never falsely trigger a TP event
-double PNLNoRun(int m) {
-   double p = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong tk = PositionGetTicket(i);
-      if(!PositionSelectByTicket(tk)) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(IsRunner(tk)) continue;
       p += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
    }
    return p;
@@ -231,8 +219,7 @@ void SortPairsByPnl(ulong &tk[], double &pf[], int c, bool ascending) {
       }
 }
 
-// Returns losing positions sorted worst-first (most negative first)
-// Runners are always profitable so they never appear here
+// Losers sorted worst-first; runners are always profitable so never appear here
 int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
    int total = PositionsTotal();
    ulong  tk[]; ArrayResize(tk, total);
@@ -254,8 +241,7 @@ int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
    return n;
 }
 
-// Returns profitable positions sorted best-first
-// skipRun=true (default): excludes runner positions
+// Profitable positions sorted best-first; skipRun=true excludes runners
 int GetBestProfit(int m, int maxN, ulong &outTk[], double &outPf[], bool skipRun=true) {
    int total = PositionsTotal();
    ulong  tk[]; ArrayResize(tk, total);
@@ -284,7 +270,6 @@ bool CloseByTicket(ulong tk) {
    return TR(m).PositionClose(tk, -1);
 }
 
-// Close all positions for a magic number
 void CM(int m) {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong tk = PositionGetTicket(i);
@@ -390,33 +375,55 @@ bool OO(int m, int dir, double lot) {
 }
 
 //+------------------------------------------------------------------+
-//| TP — CORE RULE                                                   |
+//| TP — CORE LOGIC                                                  |
 //|                                                                  |
-//| Condition : net PNL (excl. runners) >= required target           |
-//| On fire   : 1) close ALL losing positions                        |
-//|             2) close all winning positions except top SKCount    |
-//|             3) apply BE SL to SKCount survivors                  |
+//| Condition  : closeable GP (non-runner winners ranked below       |
+//|              SKCount survivors) >= required target               |
+//| Absorption : close up to AbsorbN worst losers (0 = all           |
+//|              affordable) — only if GP still covers req after     |
+//| Execute    : close absorbed losers → close closeable winners →   |
+//|              apply BE SL to SKCount survivors                    |
 //|                                                                  |
-//| This guarantees the account NEVER takes a net loss from a TP    |
-//| event. Old code used GrossProfit (winners only) as the trigger  |
-//| which allowed firing even when losers were deeper than winners,  |
-//| closing the winners while leaving all losers behind.            |
+//| Safety     : realized net = closeableGP − absorbedLoss >= req   |
+//|              this is guaranteed by the absorption loop condition |
 //+------------------------------------------------------------------+
+
+// Sum of non-runner winners ranked below top SKCount survivors for magic m
+double GetCloseableGP(int m) {
+   ulong pTk[]; double pPf[];
+   int nP = GetBestProfit(m, 999, pTk, pPf);
+   double gp = 0;
+   for(int i = SKCount; i < nP; i++) gp += pPf[i];
+   return gp;
+}
 
 // Single-magic TP
 bool DoTP(int m, double req) {
-   if(PNLNoRun(m) < req) return false;
+   // Collect non-runner winners for this magic (sorted best-first)
+   ulong pTk[]; double pPf[];
+   int nP = GetBestProfit(m, 999, pTk, pPf);
 
-   // Step 1: close all losers
+   // closeableGP = sum of winners ranked SKCount and below (survivors excluded)
+   double closeableGP = 0;
+   for(int i = SKCount; i < nP; i++) closeableGP += pPf[i];
+   if(closeableGP < req) return false;
+
+   // Collect losers sorted worst-first
    ulong lTk[]; double lPf[];
    int nL = GetWorstLoss(m, 9999, lTk, lPf);
-   for(int i = 0; i < nL; i++) CloseByTicket(lTk[i]);
 
-   // Step 2: collect remaining winners (runner-excluded), sorted best-first
-   ulong pTk[]; double pPf[];
-   int nP = GetBestProfit(m, 999, pTk, pPf);   // skipRun=true default
+   // Absorb up to AbsorbN losers while keeping closeableGP >= req + absorbed
+   int cap = (AbsorbN > 0) ? MathMin(AbsorbN, nL) : nL;
+   int absN = 0;
+   double runLoss = 0;
+   for(int i = 0; i < cap; i++) {
+      double d = runLoss + MathAbs(lPf[i]);
+      if(closeableGP < req + d) break;
+      runLoss = d; absN++;
+   }
 
-   // Step 3: close all winners except top SKCount; apply BE to survivors
+   // Execute: losers first, then winners, then BE on survivors
+   for(int i = 0; i < absN; i++) CloseByTicket(lTk[i]);
    for(int i = SKCount; i < nP; i++) CloseByTicket(pTk[i]);
    if(SKCount > 0 && SKBEPts > 0)
       for(int i = 0; i < MathMin(SKCount, nP); i++) ApplyBESL(pTk[i], SKBEPts);
@@ -424,70 +431,98 @@ bool DoTP(int m, double req) {
    return true;
 }
 
-// Multi-magic TP (used by TotTP and PairTP)
+// Multi-magic TP: SKCount survivors per magic; losers absorbed globally (worst-first across all magics)
 bool DoTPMulti(int &mgs[], double req) {
    int nm = ArraySize(mgs);
    if(nm == 0) return false;
 
-   // Condition: combined net PNL (runner-excluded) >= req
-   double totNR = 0;
-   for(int mi = 0; mi < nm; mi++) totNR += PNLNoRun(mgs[mi]);
-   if(totNR < req) return false;
+   // Combined closeable GP across all magics
+   double totalCloseableGP = 0;
+   for(int mi = 0; mi < nm; mi++) totalCloseableGP += GetCloseableGP(mgs[mi]);
+   if(totalCloseableGP < req) return false;
 
-   // Step 1: close ALL losers across all magics
+   // Collect all losers across all magics, sort worst-first globally
+   ulong allLTk[]; double allLPf[];
+   ArrayResize(allLTk, 0); ArrayResize(allLPf, 0);
    for(int mi = 0; mi < nm; mi++) {
       ulong lTk[]; double lPf[];
       int n = GetWorstLoss(mgs[mi], 9999, lTk, lPf);
-      for(int j = 0; j < n; j++) CloseByTicket(lTk[j]);
-   }
-
-   // Step 2: collect all winners (runner-excluded) across all magics, sort best-first
-   ulong allPTk[]; double allPPf[];
-   ArrayResize(allPTk, 0); ArrayResize(allPPf, 0);
-   for(int mi = 0; mi < nm; mi++) {
-      ulong pTk[]; double pPf[];
-      int n = GetBestProfit(mgs[mi], 999, pTk, pPf);
       for(int j = 0; j < n; j++) {
-         int sz = ArraySize(allPTk);
-         ArrayResize(allPTk, sz+1); ArrayResize(allPPf, sz+1);
-         allPTk[sz] = pTk[j]; allPPf[sz] = pPf[j];
+         int sz = ArraySize(allLTk);
+         ArrayResize(allLTk, sz+1); ArrayResize(allLPf, sz+1);
+         allLTk[sz] = lTk[j]; allLPf[sz] = lPf[j];
       }
    }
-   int psz = ArraySize(allPTk);
-   if(psz == 0) return true;   // only losers existed, all closed above
+   int totalL = ArraySize(allLTk);
+   SortPairsByPnl(allLTk, allLPf, totalL, true);   // worst-first globally
 
-   SortPairsByPnl(allPTk, allPPf, psz, false);
+   // Absorb up to AbsorbN worst losers while keeping totalCloseableGP >= req + absorbed
+   int cap = (AbsorbN > 0) ? MathMin(AbsorbN, totalL) : totalL;
+   int absN = 0;
+   double runLoss = 0;
+   for(int i = 0; i < cap; i++) {
+      double d = runLoss + MathAbs(allLPf[i]);
+      if(totalCloseableGP < req + d) break;
+      runLoss = d; absN++;
+   }
 
-   // Step 3: close all except top SKCount survivors
-   for(int i = SKCount; i < psz; i++) CloseByTicket(allPTk[i]);
-   if(SKCount > 0 && SKBEPts > 0)
-      for(int i = 0; i < MathMin(SKCount, psz); i++) ApplyBESL(allPTk[i], SKBEPts);
+   // Close absorbed losers
+   for(int i = 0; i < absN; i++) CloseByTicket(allLTk[i]);
+
+   // Per-magic: close non-survivor winners, apply BE to SKCount survivors
+   for(int mi = 0; mi < nm; mi++) {
+      ulong pTk[]; double pPf[];
+      int nP = GetBestProfit(mgs[mi], 999, pTk, pPf);
+      for(int i = SKCount; i < nP; i++) CloseByTicket(pTk[i]);
+      if(SKCount > 0 && SKBEPts > 0)
+         for(int i = 0; i < MathMin(SKCount, nP); i++) ApplyBESL(pTk[i], SKBEPts);
+   }
 
    return true;
 }
 
 //+------------------------------------------------------------------+
 //| TP priority dispatcher                                           |
-//| TotTP(M1+M2+M3) → PairTP(M1+M3) → SepTP(each magic alone)     |
-//| Higher priority fires first; lower levels only run if higher    |
-//| didn't fire. Prevents M1 profit being consumed by SepTP before  |
-//| PairTP can use it to offset M3 losses.                          |
+//|                                                                  |
+//| Priority 1 — TotTP  : M1 + M2 + M3 combined >= TPTot           |
+//| Priority 2 — PairTP : best qualifying 2-magic combo >= TPPair   |
+//|              checks M1+M2, M1+M3, M2+M3; fires highest GP pair  |
+//| Priority 3 — SepTP  : each magic individually >= TP1/TP2/TP3   |
+//|                                                                  |
+//| Higher priority fires first; lower levels run only if higher    |
+//| didn't fire, preventing M1 profit being consumed by SepTP       |
+//| before PairTP can use it to offset M3 losses.                   |
 //+------------------------------------------------------------------+
 void ChkAllTP() {
+   // ── Priority 1: TotTP ────────────────────────────────────────────
    if(UseTotTP) {
-      double nr = PNLNoRun(MAGIC_1)+PNLNoRun(MAGIC_2)+PNLNoRun(MAGIC_3);
-      if(nr >= TPTot) {
+      double gp = GetCloseableGP(MAGIC_1)+GetCloseableGP(MAGIC_2)+GetCloseableGP(MAGIC_3);
+      if(gp >= TPTot) {
          int mgs[] = {MAGIC_1, MAGIC_2, MAGIC_3};
          if(DoTPMulti(mgs, TPTot)) return;
       }
    }
+
+   // ── Priority 2: PairTP — any 2-magic combination ─────────────────
    if(UsePairTP) {
-      double nr = PNLNoRun(MAGIC_1)+PNLNoRun(MAGIC_3);
-      if(nr >= TPPair) {
-         int mgs[] = {MAGIC_1, MAGIC_3};
+      // All 3 possible pairs
+      int p1[3]; p1[0]=MAGIC_1; p1[1]=MAGIC_1; p1[2]=MAGIC_2;
+      int p2[3]; p2[0]=MAGIC_2; p2[1]=MAGIC_3; p2[2]=MAGIC_3;
+
+      // Find qualifying pair with highest combined closeable GP
+      int    bestIdx = -1;
+      double bestGP  = 0;
+      for(int pi = 0; pi < 3; pi++) {
+         double gp = GetCloseableGP(p1[pi]) + GetCloseableGP(p2[pi]);
+         if(gp >= TPPair && gp > bestGP) { bestGP = gp; bestIdx = pi; }
+      }
+      if(bestIdx >= 0) {
+         int mgs[2]; mgs[0] = p1[bestIdx]; mgs[1] = p2[bestIdx];
          if(DoTPMulti(mgs, TPPair)) return;
       }
    }
+
+   // ── Priority 3: SepTP ────────────────────────────────────────────
    if(UseSepTP) {
       if(En1 && Count(MAGIC_1) > 0) DoTP(MAGIC_1, TP1);
       if(En2 && Count(MAGIC_2) > 0) DoTP(MAGIC_2, TP2);
@@ -587,8 +622,8 @@ double GridLot(int m, int level) {
    return NLot(base * MathPow(mult, (double)level));
 }
 
-// M1: BUY grid, bidirectional — opens new BUY each time price moves
-// GS1 points in either direction from the last BUY open price
+// M1: BUY grid bidirectional — add BUY each time price moves GS1 pts in either
+// direction from the last BUY open price
 void ChkGrid1() {
    if(!En1) return;
    if(gTrig.active && gTrig.stoppedMagic == MAGIC_1) return;
@@ -600,7 +635,7 @@ void ChkGrid1() {
       if(OO(MAGIC_1, 1, GridLot(MAGIC_1, cnt))) gLastBuy = ask;
 }
 
-// M3: SELL grid, bidirectional — same logic as M1 but opens SELLs
+// M3: SELL grid bidirectional — add SELL each time price moves GS3 pts in either direction
 void ChkGrid3() {
    if(!En3) return;
    if(gTrig.active && gTrig.stoppedMagic == MAGIC_3) return;
@@ -612,27 +647,21 @@ void ChkGrid3() {
       if(OO(MAGIC_3, -1, GridLot(MAGIC_3, cnt))) gLastSell = bid;
 }
 
-// M2: ADX-directed grid in normal mode; switches to counter-trend
-// assist direction when loss trigger is active
+// M2: ADX-directed in normal mode; counter-trend assist when trigger active
 void ChkM2() {
    if(!En2) return;
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int dir = 0;
    if(gTrig.active) {
-      // M1 stopped (BUY grid underwater) → M2 SELLs while price below trigger,
-      // then switches to BUY when price recovers above trigger price
       if(gTrig.stoppedMagic == MAGIC_1)
          dir = (bid >= gTrig.trigPrice) ? 1 : -1;
-      // M3 stopped (SELL grid underwater) → M2 BUYs while price above trigger,
-      // then switches to SELL when price recovers below trigger price
       else
          dir = (ask <= gTrig.trigPrice) ? -1 : 1;
    } else {
       dir = gADXDir;
    }
    if(dir == 0) return;
-   // If existing M2 positions are in the wrong direction, close them all first
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong tk = PositionGetTicket(i);
       if(!PositionSelectByTicket(tk)) continue;
@@ -655,32 +684,25 @@ void ChkTrigger() {
       if(En1 && Count(MAGIC_1) > 0) {
          double pnl1 = PNL(MAGIC_1);
          if(pnl1 <= -LossTrig1) {
-            gTrig.active = true;
-            gTrig.stoppedMagic = MAGIC_1;
+            gTrig.active = true; gTrig.stoppedMagic = MAGIC_1;
             gTrig.trigPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             PrintFormat("[Trigger] M1 PNL=%.2f  trig=%.5f", pnl1, gTrig.trigPrice);
-            CM(MAGIC_2);
-            return;
+            CM(MAGIC_2); return;
          }
       }
       if(En3 && Count(MAGIC_3) > 0) {
          double pnl3 = PNL(MAGIC_3);
          if(pnl3 <= -LossTrig3) {
-            gTrig.active = true;
-            gTrig.stoppedMagic = MAGIC_3;
+            gTrig.active = true; gTrig.stoppedMagic = MAGIC_3;
             gTrig.trigPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             PrintFormat("[Trigger] M3 PNL=%.2f  trig=%.5f", pnl3, gTrig.trigPrice);
-            CM(MAGIC_2);
-            return;
+            CM(MAGIC_2); return;
          }
       }
    } else {
-      // Release trigger once the stopped magic's total PNL recovers to 0
       if(PNL(gTrig.stoppedMagic) >= 0) {
          PrintFormat("[Trigger] M%d recovered", gTrig.stoppedMagic == MAGIC_1 ? 1 : 3);
-         gTrig.active = false;
-         gTrig.stoppedMagic = 0;
-         gTrig.trigPrice = 0.0;
+         gTrig.active = false; gTrig.stoppedMagic = 0; gTrig.trigPrice = 0.0;
          gTrigCoolEnd = TimeCurrent() + TrigCoolSec;
          CM(MAGIC_2);
       }
@@ -876,7 +898,7 @@ void ShowDashboard() {
    else if(gADXDir == -1)   { m2mod = "▼ SELL  (ADX trend)"; m2mClr = C'255,130,130'; }
    else                     { m2mod = "■ IDLE  (ADX flat)";  m2mClr = CL_NEU;         }
 
-   int PH = 3+HDR_H+2+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+STAT_H+3;   // 247
+   int PH = 3+HDR_H+2+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+STAT_H+3;
 
    Rect(PFX+"BORDER", px, py,   PW_OUT, PH,   CB_BORDER, CB_BORDER);
    Rect(PFX+"BG",     xi, py+3, PW_IN,  PH-6, CB_BG,     CB_BG);
@@ -965,7 +987,6 @@ int OnInit() {
       if(hADX == INVALID_HANDLE) Print("[Init] ADX handle fail");
    }
 
-   // Restore gLastBuy / gLastSell from most recently opened open position
    gLastBuy = 0.0; gLastSell = 0.0;
    datetime latestBuyTime = 0, latestSellTime = 0;
    for(int i = PositionsTotal()-1; i >= 0; i--) {
@@ -999,7 +1020,7 @@ void OnDeinit(const int reason) {
 }
 
 //+------------------------------------------------------------------+
-//| OnTick — execution order matters                                 |
+//| OnTick                                                           |
 //+------------------------------------------------------------------+
 void OnTick() {
    gADXDir = ADXDir();
@@ -1007,16 +1028,16 @@ void OnTick() {
    if(b > gBalanceHigh) gBalanceHigh = b;
 
    ChkDayRollover();
-   UpdateRunners();      // must run first — designates runners before any TP logic reads IsRunner()
+   UpdateRunners();      // designate runners before any TP reads IsRunner()
 
-   ChkTrigger();         // arms/releases loss trigger, switches M2 mode
-   ChkGrid1();           // M1 bidirectional BUY grid
-   ChkGrid3();           // M3 bidirectional SELL grid
-   ChkM2();              // M2 ADX/trigger-directed grid
+   ChkTrigger();
+   ChkGrid1();
+   ChkGrid3();
+   ChkM2();
 
-   ChkAllTP();           // priority: TotTP → PairTP → SepTP
+   ChkAllTP();           // TotTP → PairTP (best 2-magic combo) → SepTP
    ChkTPAll();           // close all non-runners when combined net >= TPAll
-   ChkRunTP();           // separate TP target for runner positions only
+   ChkRunTP();           // separate TP for runner positions
 
    ChkBPK();
    ShowDashboard();

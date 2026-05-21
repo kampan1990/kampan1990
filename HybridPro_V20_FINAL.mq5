@@ -18,10 +18,12 @@
 #define PW_OUT   316
 #define PW_IN    310
 #define HDR_H     30
+#define ACCT_H    64
 #define TRIG_H    30
-#define MSEC_H    46
-#define M2R_H     26
-#define STAT_H    52
+#define MSEC_H    64
+#define M2R_H     42
+#define TPST_H    44
+#define STAT_H    36
 
 // ── Color palette ────────────────────────────────────────────────────
 #define CB_BORDER  C'42,55,95'
@@ -159,6 +161,7 @@ double   gDailyLot3  = 0.0;
 datetime gTodayStart = 0;
 
 double gBalanceHigh = 0.0;
+double gMaxDD       = 0.0;
 
 //+------------------------------------------------------------------+
 //| HELPERS                                                          |
@@ -193,6 +196,19 @@ int Count(int m) {
       c++;
    }
    return c;
+}
+
+int CountLosers(int m) {
+   int n = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);
+      if(!PositionSelectByTicket(tk)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != m) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      double pp = PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      if(pp < 0) n++;
+   }
+   return n;
 }
 
 // Full PNL including runners (trigger checks, dashboard)
@@ -778,19 +794,20 @@ void Bar(string id, int x, int y, int totalW, int h, int cnt, int maxCnt, color 
 }
 
 //+------------------------------------------------------------------+
-//| Magic section row (M1 / M3)                                      |
+//| Magic section row (M1 / M3) — 3 rows: status | PNL | CGP/Lose   |
 //+------------------------------------------------------------------+
 void DrawMagicSec(string id, int xi, int sy,
                   color acClr, color bgClr,
                   string tag, string statusTxt, color statusClr,
                   int cnt, int maxCnt,
                   int runCnt, int runMax,
-                  double pnl, double openLot) {
+                  double pnl, double openLot,
+                  double cgp, int losers, double sepTarget) {
    Rect(PFX+id+"_BG",  xi,   sy, PW_IN,   MSEC_H, bgClr, bgClr);
    Rect(PFX+id+"_ACC", xi,   sy, 5,       MSEC_H, acClr, acClr);
    Rect(PFX+id+"_HI",  xi+5, sy, PW_IN-5, 1,      C'20,28,52', C'20,28,52');
 
-   int r1 = sy+7;
+   int r1 = sy+8;
    Lbl(PFX+id+"_TAG", xi+13,  r1, tag,       acClr,     FN);
    Lbl(PFX+id+"_STA", xi+37,  r1, statusTxt, statusClr, FN);
 
@@ -802,26 +819,48 @@ void DrawMagicSec(string id, int xi, int sy,
    Lbl(PFX+id+"_CNT", xi+274, r1, StringFormat("%d/%d", cnt, maxCnt), CL_INFO, FS, "Courier New");
 
    int r2 = sy+28;
-   Lbl(PFX+id+"_PL", xi+13,  r2, "PNL",                             CL_INFO,        FS,  "Arial");
-   Lbl(PFX+id+"_PV", xi+37,  r2, StringFormat("%+.2f $", pnl),       PnlClr(pnl),    FN);
-   Lbl(PFX+id+"_LL", xi+160, r2, "Open",                            CL_INFO,        FXS, "Arial");
-   Lbl(PFX+id+"_LV", xi+193, r2, StringFormat("%.2f lot", openLot),  CL_CYAN,        FN);
+   Lbl(PFX+id+"_PL",  xi+13,  r2, "PNL",                            CL_INFO,     FS,  "Arial");
+   Lbl(PFX+id+"_PV",  xi+37,  r2, StringFormat("%+.2f $", pnl),      PnlClr(pnl), FN);
+   Lbl(PFX+id+"_LL",  xi+160, r2, "Open",                           CL_INFO,     FXS, "Arial");
+   Lbl(PFX+id+"_LV",  xi+193, r2, StringFormat("%.2f lot", openLot), CL_CYAN,     FN);
+
+   int r3 = sy+47;
+   double tgt    = (sepTarget > 0) ? sepTarget : 1.0;
+   double ratio  = cgp / tgt;
+   color cgpClr  = (cgp >= tgt)      ? CL_POS
+                 : (ratio >= 0.7)    ? C'220,185,40'
+                 : (cgp  > 0)        ? CL_NEU
+                                     : CL_INFO;
+   color lsClr   = (losers > 5)  ? CL_NEG
+                 : (losers > 0)  ? C'220,100,100'
+                                 : CL_NEU;
+   Lbl(PFX+id+"_GL",  xi+13,  r3, "CGP",                            CL_INFO,  FXS, "Arial");
+   Lbl(PFX+id+"_GV",  xi+37,  r3, StringFormat("%+.2f", cgp),        cgpClr,   FN);
+   Lbl(PFX+id+"_LsL", xi+160, r3, "Lose",                           CL_INFO,  FXS, "Arial");
+   Lbl(PFX+id+"_LsV", xi+193, r3, StringFormat("%d pos", losers),    lsClr,    FN);
 }
 
 //+------------------------------------------------------------------+
-//| M2 row                                                           |
+//| M2 row — 2 rows: mode/cnt | PNL/CGP                             |
 //+------------------------------------------------------------------+
 void DrawM2Row(int xi, int sy, string modeTxt, color modeClr,
-               int cnt, int maxCnt, double pnl) {
+               int cnt, int maxCnt, double pnl, double cgp) {
    Rect(PFX+"M2_BG",  xi,   sy, PW_IN,   M2R_H, CB_M2, CB_M2);
    Rect(PFX+"M2_ACC", xi,   sy, 5,       M2R_H, CA_M2, CA_M2);
    Rect(PFX+"M2_HI",  xi+5, sy, PW_IN-5, 1,     C'20,28,52', C'20,28,52');
 
    int r1 = sy+8;
-   Lbl(PFX+"M2_TAG", xi+13,  r1, "M2",                              CA_M2,       FN);
-   Lbl(PFX+"M2_MOD", xi+37,  r1, modeTxt,                           modeClr,     FN);
-   Lbl(PFX+"M2_CNT", xi+210, r1, StringFormat("%d/%d", cnt, maxCnt), CL_INFO,    FS,  "Courier New");
-   Lbl(PFX+"M2_PNL", xi+252, r1, StringFormat("%+.2f", pnl),         PnlClr(pnl), FN);
+   Lbl(PFX+"M2_TAG", xi+13,  r1, "M2",                               CA_M2,       FN);
+   Lbl(PFX+"M2_MOD", xi+37,  r1, modeTxt,                            modeClr,     FN);
+   Lbl(PFX+"M2_CNT", xi+243, r1, StringFormat("%d/%d", cnt, maxCnt), CL_INFO,     FS, "Courier New");
+
+   int r2 = sy+24;
+   Lbl(PFX+"M2_PL",  xi+13,  r2, "PNL",                             CL_INFO,     FXS, "Arial");
+   Lbl(PFX+"M2_PV",  xi+37,  r2, StringFormat("%+.2f $", pnl),       PnlClr(pnl), FN);
+   double tgt2   = (TP2 > 0) ? TP2 : 1.0;
+   color  cgp2Cl = (cgp >= tgt2) ? CL_POS : (cgp >= tgt2*0.7) ? C'220,185,40' : (cgp > 0) ? CL_NEU : CL_INFO;
+   Lbl(PFX+"M2_GL",  xi+160, r2, "CGP",                             CL_INFO,     FXS, "Arial");
+   Lbl(PFX+"M2_GV",  xi+193, r2, StringFormat("%+.2f", cgp),         cgp2Cl,      FN);
 }
 
 //+------------------------------------------------------------------+
@@ -858,6 +897,75 @@ void DrawTrigBanner(int xi, int sy, int bw) {
 }
 
 //+------------------------------------------------------------------+
+//| Account summary section                                         |
+//+------------------------------------------------------------------+
+void DrawAcctSection(int xi, int sy, double bal, double equity, double pnl,
+                     double maxdd, double currdd, double lday) {
+   Rect(PFX+"ACC_BG",  xi,   sy, PW_IN,   ACCT_H, C'10,13,26', C'10,13,26');
+   Rect(PFX+"ACC_TOP", xi,   sy, PW_IN,   2,      C'35,60,150', C'35,60,150');
+   Rect(PFX+"ACC_LB",  xi,   sy, 5,       ACCT_H, C'35,60,150', C'35,60,150');
+   Rect(PFX+"ACC_DIV", xi+156, sy+4, 1, ACCT_H-8, C'22,30,56', C'22,30,56');
+
+   int cl = xi+13, cr = xi+165;
+   int r1 = sy+9, r2 = sy+26, r3 = sy+44;
+
+   Lbl(PFX+"BAL_L",  cl,    r1, "BAL",   CL_INFO,   FS, "Arial");
+   Lbl(PFX+"BAL_V",  cl+30, r1, StringFormat("$%.2f", bal),    CL_BRIGHT, FN);
+   Lbl(PFX+"EQA_L",  cr,    r1, "EQ",    CL_INFO,   FS, "Arial");
+   Lbl(PFX+"EQA_V",  cr+22, r1, StringFormat("$%.2f", equity), CL_BRIGHT, FN);
+
+   Lbl(PFX+"PLA_L",  cl,    r2, "P&L",   CL_INFO,      FS, "Arial");
+   Lbl(PFX+"PLA_V",  cl+30, r2, StringFormat("%+.2f $", pnl), PnlClr(pnl), FN);
+   color mddClr = (maxdd >= 20) ? CL_NEG : (maxdd >= 10) ? C'255,155,0' : CL_NEU;
+   Lbl(PFX+"MDD_L",  cr,    r2, "MaxDD", CL_INFO,      FS, "Arial");
+   Lbl(PFX+"MDD_V",  cr+40, r2, StringFormat("%.2f%%", maxdd), mddClr, FN);
+
+   color cddClr = (currdd >= 10) ? CL_NEG : (currdd >= 5) ? C'255,155,0' : CL_NEU;
+   Lbl(PFX+"CDD_L",  cl,    r3, "DD",    CL_INFO,   FS, "Arial");
+   Lbl(PFX+"CDD_V",  cl+22, r3, StringFormat("%.2f%%", currdd), cddClr, FN);
+   Lbl(PFX+"LDA_L",  cr,    r3, "Lot/D", CL_INFO,   FS, "Arial");
+   Lbl(PFX+"LDA_V",  cr+40, r3, StringFormat("%.2f", lday), CL_CYAN, FN);
+}
+
+//+------------------------------------------------------------------+
+//| TP readiness section                                             |
+//+------------------------------------------------------------------+
+void DrawTPStatus(int xi, int sy,
+                  bool useTot,  double totCGP,  double totTgt,
+                  bool usePair, string pairLbl, double pairCGP, double pairTgt) {
+   Rect(PFX+"TP_BG",  xi, sy, PW_IN, TPST_H, C'8,10,20', C'8,10,20');
+   Rect(PFX+"TP_TOP", xi, sy, PW_IN, 1,      CB_SEP_HI, CB_SEP_HI);
+   Rect(PFX+"TP_LB",  xi, sy, 5, TPST_H,    C'45,75,165', C'45,75,165');
+
+   int cl = xi+13, bx = xi+75, bw = 122, vx = xi+206;
+   int r1 = sy+10, r2 = sy+28;
+
+   if(useTot) {
+      double pct  = (totTgt > 0) ? MathMin(1.0, MathMax(0.0, totCGP/totTgt)) : 0;
+      color  vClr = (totCGP >= totTgt) ? CL_POS : (pct >= 0.7) ? C'220,190,40' : CL_NEU;
+      Lbl(PFX+"TP1_L", cl, r1, "TOT", CL_INFO, FS, "Arial");
+      Bar("TP_TOT", bx, r1+1, bw, 7, (int)MathRound(pct*100), 100, CA_M1);
+      Lbl(PFX+"TP1_V", vx, r1, StringFormat("%.2f / %.2f", totCGP, totTgt), vClr, FS, "Courier New");
+   } else {
+      Lbl(PFX+"TP1_L", cl, r1, "TOT  ──  OFF", C'45,55,82', FS, "Arial");
+      Bar("TP_TOT", bx, r1+1, bw, 7, 0, 100, CA_M1);
+      Lbl(PFX+"TP1_V", vx, r1, "──", C'45,55,82', FS, "Courier New");
+   }
+
+   if(usePair) {
+      double pct  = (pairTgt > 0) ? MathMin(1.0, MathMax(0.0, pairCGP/pairTgt)) : 0;
+      color  vClr = (pairCGP >= pairTgt) ? CL_POS : (pct >= 0.7) ? C'220,190,40' : CL_NEU;
+      Lbl(PFX+"TP2_L", cl, r2, pairLbl, CL_INFO, FS, "Arial");
+      Bar("TP_PAIR", bx, r2+1, bw, 7, (int)MathRound(pct*100), 100, CA_M2);
+      Lbl(PFX+"TP2_V", vx, r2, StringFormat("%.2f / %.2f", pairCGP, pairTgt), vClr, FS, "Courier New");
+   } else {
+      Lbl(PFX+"TP2_L", cl, r2, "PAIR  ──  OFF", C'45,55,82', FS, "Arial");
+      Bar("TP_PAIR", bx, r2+1, bw, 7, 0, 100, CA_M2);
+      Lbl(PFX+"TP2_V", vx, r2, "──", C'45,55,82', FS, "Courier New");
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Dashboard                                                        |
 //+------------------------------------------------------------------+
 void ShowDashboard() {
@@ -868,19 +976,23 @@ void ShowDashboard() {
    int py = PanelY;
    int xi = px + 3;
 
-   double p1 = PNL(MAGIC_1), p2 = PNL(MAGIC_2), p3 = PNL(MAGIC_3);
-   int    c1 = Count(MAGIC_1), c2 = Count(MAGIC_2), c3 = Count(MAGIC_3);
-   double l1 = TotalLot(MAGIC_1), l2 = TotalLot(MAGIC_2), l3 = TotalLot(MAGIC_3);
+   double p1  = PNL(MAGIC_1), p2  = PNL(MAGIC_2), p3  = PNL(MAGIC_3);
+   int    c1  = Count(MAGIC_1), c2  = Count(MAGIC_2), c3  = Count(MAGIC_3);
+   double l1  = TotalLot(MAGIC_1), l2 = TotalLot(MAGIC_2), l3 = TotalLot(MAGIC_3);
+   double cgp1 = GetCloseableGP(MAGIC_1);
+   double cgp2 = GetCloseableGP(MAGIC_2);
+   double cgp3 = GetCloseableGP(MAGIC_3);
+   int    los1 = CountLosers(MAGIC_1), los2 = CountLosers(MAGIC_2), los3 = CountLosers(MAGIC_3);
    double lDay   = gDailyLot1 + gDailyLot2 + gDailyLot3;
    double tot    = p1 + p2 + p3;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double bal    = AccountInfoDouble(ACCOUNT_BALANCE);
    if(bal > gBalanceHigh) gBalanceHigh = bal;
-   double dd  = (gBalanceHigh > 0 && equity < gBalanceHigh)
-                ? (gBalanceHigh - equity) / gBalanceHigh * 100.0 : 0.0;
-   int    spd = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   int r1cnt = ArraySize(gRunTk1);
-   int r3cnt = ArraySize(gRunTk3);
+   double currDD = (gBalanceHigh > 0 && equity < gBalanceHigh)
+                   ? (gBalanceHigh - equity) / gBalanceHigh * 100.0 : 0.0;
+   int    spd    = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   int    r1cnt  = ArraySize(gRunTk1);
+   int    r3cnt  = ArraySize(gRunTk3);
 
    bool   m1stopped = (gTrig.active && gTrig.stoppedMagic == MAGIC_1);
    string m1sta     = m1stopped ? "⛔ STOP" : "↕ BUY";
@@ -898,73 +1010,85 @@ void ShowDashboard() {
    else if(gADXDir == -1)   { m2mod = "▼ SELL  (ADX trend)"; m2mClr = C'255,130,130'; }
    else                     { m2mod = "■ IDLE  (ADX flat)";  m2mClr = CL_NEU;         }
 
-   int PH = 3+HDR_H+2+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+STAT_H+3;
+   // Best pair combo for TP status bar
+   double pCGP[3];
+   pCGP[0] = cgp1+cgp2; pCGP[1] = cgp1+cgp3; pCGP[2] = cgp2+cgp3;
+   string pLbl[3]; pLbl[0]="M1+M2"; pLbl[1]="M1+M3"; pLbl[2]="M2+M3";
+   int bestPi = 0;
+   if(pCGP[1] > pCGP[bestPi]) bestPi = 1;
+   if(pCGP[2] > pCGP[bestPi]) bestPi = 2;
+   string bestPairLbl = "PAIR " + pLbl[bestPi];
+   double bestPairCGP = pCGP[bestPi];
+   double totCGP      = cgp1 + cgp2 + cgp3;
+
+   int PH = 3+HDR_H+2+ACCT_H+1+TRIG_H+1+MSEC_H+1+M2R_H+1+MSEC_H+2+TPST_H+2+STAT_H+3;
 
    Rect(PFX+"BORDER", px, py,   PW_OUT, PH,   CB_BORDER, CB_BORDER);
    Rect(PFX+"BG",     xi, py+3, PW_IN,  PH-6, CB_BG,     CB_BG);
 
+   // ── Header ──────────────────────────────────────────────────────
    int hy = py+3;
    Rect(PFX+"H_BG",   xi,     hy,       PW_IN, HDR_H, CB_HDR,        CB_HDR);
    Rect(PFX+"H_TOP",  xi,     hy,       PW_IN, 2,     C'60,100,200', C'60,100,200');
    Rect(PFX+"H_LINE", xi,     hy+HDR_H, PW_IN, 2,     CB_HDR_LN,     CB_HDR_LN);
-   Lbl(PFX+"H_TXT",   xi+12,  hy+8,  "⚡  HYBRID PRO  V"+EA_VER,   CL_GOLD,        FH);
-   Lbl(PFX+"H_STF",   xi+235, hy+10, _Symbol+" · "+TFStr(_Period),  C'100,125,170', FS, "Arial");
+   Lbl(PFX+"H_TXT",   xi+12,  hy+8,  "⚡  HYBRID PRO  V"+EA_VER,  CL_GOLD,        FH);
+   Lbl(PFX+"H_STF",   xi+235, hy+10, _Symbol+" · "+TFStr(_Period), C'100,125,170', FS, "Arial");
 
-   int ty  = hy + HDR_H + 2;
+   // ── Account summary ─────────────────────────────────────────────
+   int aY = hy + HDR_H + 2;
+   DrawAcctSection(xi, aY, bal, equity, tot, gMaxDD, currDD, lDay);
+
+   Rect(PFX+"SEP_A", xi, aY+ACCT_H, PW_IN, 1, CB_SEP, CB_SEP);
+
+   // ── Trigger banner ───────────────────────────────────────────────
+   int ty = aY + ACCT_H + 1;
    DrawTrigBanner(xi, ty, PW_IN);
 
-   int sy1  = ty + TRIG_H + 1;
-   int s12  = sy1 + MSEC_H;
-   int sy2  = s12 + 1;
-   int s23  = sy2 + M2R_H;
-   int sy3  = s23 + 1;
-   int sBri = sy3 + MSEC_H;
-   int stY  = sBri + 2;
-
-   Rect(PFX+"SEP12",  xi, s12,  PW_IN, 1, CB_SEP,    CB_SEP);
-   Rect(PFX+"SEP23",  xi, s23,  PW_IN, 1, CB_SEP,    CB_SEP);
-   Rect(PFX+"SEPBRI", xi, sBri, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
-
+   // ── M1 section ───────────────────────────────────────────────────
+   int sep01 = ty + TRIG_H;
+   Rect(PFX+"SEP01", xi, sep01, PW_IN, 1, CB_SEP, CB_SEP);
+   int sy1 = sep01 + 1;
    DrawMagicSec("M1", xi, sy1, CA_M1, CB_M1, "M1", m1sta, m1clr,
-                c1, MaxGrid1, r1cnt, RunKeepN1, p1, l1);
-   DrawM2Row(xi, sy2, m2mod, m2mClr, c2, MaxGrid2, p2);
-   DrawMagicSec("M3", xi, sy3, CA_M3, CB_M3, "M3", m3sta, m3clr,
-                c3, MaxGrid3, r3cnt, RunKeepN3, p3, l3);
+                c1, MaxGrid1, r1cnt, RunKeepN1, p1, l1, cgp1, los1, TP1);
 
+   // ── M2 row ────────────────────────────────────────────────────────
+   int s12 = sy1 + MSEC_H;
+   Rect(PFX+"SEP12", xi, s12, PW_IN, 1, CB_SEP, CB_SEP);
+   int sy2 = s12 + 1;
+   DrawM2Row(xi, sy2, m2mod, m2mClr, c2, MaxGrid2, p2, cgp2);
+
+   // ── M3 section ───────────────────────────────────────────────────
+   int s23 = sy2 + M2R_H;
+   Rect(PFX+"SEP23", xi, s23, PW_IN, 1, CB_SEP, CB_SEP);
+   int sy3 = s23 + 1;
+   DrawMagicSec("M3", xi, sy3, CA_M3, CB_M3, "M3", m3sta, m3clr,
+                c3, MaxGrid3, r3cnt, RunKeepN3, p3, l3, cgp3, los3, TP3);
+
+   // ── TP readiness ─────────────────────────────────────────────────
+   int sBri = sy3 + MSEC_H;
+   Rect(PFX+"SEPBRI", xi, sBri, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
+   int tpY = sBri + 2;
+   DrawTPStatus(xi, tpY, UseTotTP, totCGP, TPTot, UsePairTP, bestPairLbl, bestPairCGP, TPPair);
+
+   // ── Stats footer ─────────────────────────────────────────────────
+   int sBri2 = tpY + TPST_H;
+   Rect(PFX+"SEPBR2", xi, sBri2, PW_IN, 2, CB_SEP_HI, CB_SEP_HI);
+   int stY = sBri2 + 2;
    Rect(PFX+"ST_BG", xi, stY, PW_IN, STAT_H, CB_STAT,   CB_STAT);
    Rect(PFX+"ST_HI", xi, stY, PW_IN, 1,      CB_SEP_HI, CB_SEP_HI);
-   Rect(PFX+"VDIV",  xi+156, stY+4, 1, STAT_H-8, C'28,36,62', C'28,36,62');
 
-   int cl  = xi+10;
-   int sr1 = stY+6;
-   Lbl(PFX+"FL_L",  cl,    sr1, "FLOAT",                     CL_INFO,      FS,  "Arial");
-   Lbl(PFX+"FL_V",  cl+48, sr1, StringFormat("%+.2f $", tot), PnlClr(tot), 11);
-
-   int sr2 = stY+23;
-   color ddClr = (dd >= 10) ? CL_NEG : (dd >= 5) ? C'255,165,0' : CL_NEU;
-   Lbl(PFX+"DD_L",  cl,    sr2, "DD",                        CL_INFO,  FS, "Arial");
-   Lbl(PFX+"DD_V",  cl+22, sr2, StringFormat("%.2f%%", dd),  ddClr,    FN);
-
-   int sr3 = stY+39;
    string adxTxt; color adxClr;
-   if(!UseADX || hADX == INVALID_HANDLE) { adxTxt = "ADX OFF";   adxClr = C'70,80,110'; }
-   else if(gADXDir ==  1)                { adxTxt = "ADX ▲ UP";  adxClr = CL_POS;       }
-   else if(gADXDir == -1)                { adxTxt = "ADX ▼ DN";  adxClr = CL_NEG;       }
-   else                                  { adxTxt = "ADX ▬ --";  adxClr = CL_NEU;       }
-   Lbl(PFX+"ADX_V", cl, sr3, adxTxt, adxClr, FN);
-
-   int cr = xi+165;
-   Lbl(PFX+"EQ_L",  cr,    sr1, "EQUITY",                           CL_INFO,   FS,  "Arial");
-   Lbl(PFX+"EQ_V",  cr+52, sr1, StringFormat("$%.0f", equity),       CL_BRIGHT, FN);
+   if(!UseADX || hADX == INVALID_HANDLE) { adxTxt = "ADX  OFF";   adxClr = C'70,80,110'; }
+   else if(gADXDir ==  1)                { adxTxt = "ADX  ▲ UP";  adxClr = CL_POS;       }
+   else if(gADXDir == -1)                { adxTxt = "ADX  ▼ DN";  adxClr = CL_NEG;       }
+   else                                  { adxTxt = "ADX  ▬ --";  adxClr = CL_NEU;       }
 
    color spdClr = (spd > MaxSpread) ? CL_NEG : CL_NEU;
-   Lbl(PFX+"SP_L",  cr,    sr2, "Spread",                           CL_INFO,  FS,  "Arial");
-   Lbl(PFX+"SP_V",  cr+52, sr2, StringFormat("%d pt", spd),          spdClr,   FN);
-
-   Lbl(PFX+"LD_L",  cr,    sr3, "Lot/Day",                          CL_INFO,  FS,  "Arial");
-   Lbl(PFX+"LD_V",  cr+52, sr3, StringFormat("%.2f lot", lDay),      CL_CYAN,  FN);
-
-   Lbl(PFX+"TIME",  xi+PW_IN-58, stY+STAT_H-13,
+   int   sr     = stY + 12;
+   Lbl(PFX+"ADX_V", xi+13,  sr, adxTxt,                         adxClr,  FN);
+   Lbl(PFX+"SP_L",  xi+110, sr, "Spread",                        CL_INFO, FS, "Arial");
+   Lbl(PFX+"SP_V",  xi+158, sr, StringFormat("%d pt", spd),       spdClr,  FN);
+   Lbl(PFX+"TIME",  xi+224, stY+STAT_H-11,
        TimeToString(TimeCurrent(), TIME_MINUTES), CL_TIME, FXS, "Arial");
 
    ChartRedraw();
@@ -1006,6 +1130,7 @@ int OnInit() {
    gTrigCoolEnd = 0; gADXDir = 0;
    ArrayResize(gRunTk1, 0); ArrayResize(gRunTk3, 0);
    gBalanceHigh = AccountInfoDouble(ACCOUNT_BALANCE);
+   gMaxDD       = 0.0;
    RestoreDailyLots();
 
    PrintFormat("[Init] HybridPro V%s  M1=%d M2=%d M3=%d",
@@ -1026,6 +1151,12 @@ void OnTick() {
    gADXDir = ADXDir();
    double b = AccountInfoDouble(ACCOUNT_BALANCE);
    if(b > gBalanceHigh) gBalanceHigh = b;
+   {
+      double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
+      double cdd = (gBalanceHigh > 0 && eq < gBalanceHigh)
+                   ? (gBalanceHigh - eq) / gBalanceHigh * 100.0 : 0.0;
+      if(cdd > gMaxDD) gMaxDD = cdd;
+   }
 
    ChkDayRollover();
    UpdateRunners();      // designate runners before any TP reads IsRunner()

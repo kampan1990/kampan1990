@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HybridPro V20 — System Workflow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0c14; color:#b0c4de; font-family:'Segoe UI',sans-serif; }
+  h1 { text-align:center; padding:24px 0 4px; color:#ffc832; font-size:20px; letter-spacing:2px; }
+  h2 { text-align:center; color:#6496c8; font-size:13px; margin-bottom:20px; font-weight:normal; }
+  .tabs { display:flex; justify-content:center; gap:8px; padding:16px 0; flex-wrap:wrap; }
+  .tab { padding:8px 20px; border-radius:6px; cursor:pointer; font-size:13px; border:1px solid #2a3660;
+         background:#0f1530; color:#6a80aa; transition:.2s; }
+  .tab.active { background:#1a3080; color:#fff; border-color:#3060c8; }
+  .tab:hover:not(.active) { background:#141e40; color:#90a8d0; }
+  .panel { display:none; padding:16px 24px 40px; max-width:1400px; margin:0 auto; }
+  .panel.active { display:block; }
+  .mermaid { background:#080a18; border:1px solid #1a2448; border-radius:8px;
+             padding:24px; overflow-x:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:12px; padding:16px 0 0; justify-content:center; }
+  .leg-item { display:flex; align-items:center; gap:6px; font-size:12px; color:#6a80aa; }
+  .leg-dot { width:14px; height:14px; border-radius:3px; }
+  .note { background:#0d1228; border-left:3px solid #2050b0; padding:12px 16px;
+          border-radius:4px; margin:12px 0; font-size:13px; color:#8090b8; line-height:1.7; }
+  .note b { color:#90b8ff; }
+  .warn { background:#1a0e10; border-left:3px solid #d83030; }
+  .warn b { color:#ff8080; }
+  .ok { background:#0a1a10; border-left:3px solid #30b860; }
+  .ok b { color:#60e890; }
+</style>
+</head>
+<body>
+<h1>⚡ HYBRID PRO V20 — System Workflow</h1>
+<h2>Complete flow diagram | M1=BUY Grid · M2=ADX/Trigger Assist · M3=SELL Grid</h2>
+
+<div class="tabs">
+  <div class="tab active" onclick="show('ontick')">① OnTick Main Loop</div>
+  <div class="tab" onclick="show('grid')">② Grid Systems</div>
+  <div class="tab" onclick="show('trigger')">③ Loss Trigger</div>
+  <div class="tab" onclick="show('runner')">④ Runner System</div>
+  <div class="tab" onclick="show('tp')">⑤ TP Hierarchy</div>
+  <div class="tab" onclick="show('dotp')">⑥ DoTP Core Logic</div>
+  <div class="tab" onclick="show('redesign')">⑦ Redesign Proposal</div>
+</div>
+
+<!-- ① OnTick Main Loop -->
+<div id="tab-ontick" class="panel active">
+<div class="mermaid">
+flowchart TD
+    TICK(["🔔 OnTick()"]):::start
+
+    subgraph INIT["📊 State Update"]
+      ADX["ADXDir()\nread H1 ADX indicator"]
+      BAL["Balance peak track\ngMaxDD update"]
+      DAY["ChkDayRollover()\nreset daily lot counters"]
+    end
+
+    subgraph RUNNERS["⭐ Runner Designation"]
+      UR["UpdateRunners()\nDesignate top RunKeepN1/3\nprofitable positions as runners\nApply RunBEPts SL to runners"]
+    end
+
+    subgraph GRIDS["📈 Grid Entry"]
+      GT["ChkTrigger()\nM1 or M3 loss threshold?"]
+      G1["ChkGrid1()\nM1 BUY grid"]
+      G3["ChkGrid3()\nM3 SELL grid"]
+      G2["ChkM2()\nADX-directed or Assist"]
+    end
+
+    subgraph TP_SYS["💰 Take Profit Systems"]
+      CALLTP["ChkAllTP()\nPriority dispatcher"]
+      CALLTPALL["ChkTPAll()\nCombined portfolio TP"]
+      CALLRUN["ChkRunTP()\nRunner-only TP"]
+    end
+
+    BPK["ChkBPK()\nBreakeven SL on\nprofitable positions"]
+    DASH["ShowDashboard()\nUpdate panel"]
+
+    TICK --> ADX --> BAL --> DAY --> UR
+    UR --> GT --> G1 --> G3 --> G2
+    G2 --> CALLTP --> CALLTPALL --> CALLRUN
+    CALLRUN --> BPK --> DASH
+
+    classDef start fill:#1a3080,stroke:#4060c8,color:#fff,font-weight:bold
+    classDef tp fill:#1a2840,stroke:#3060a0,color:#a0c0e8
+</div>
+
+<div class="note">
+  <b>Execution Order Critical:</b> UpdateRunners() runs BEFORE any TP check — ensures runner exclusion is current.<br>
+  ChkTrigger() before Grids — if trigger active, M1 or M3 grid entry is blocked.<br>
+  ChkAllTP → ChkTPAll → ChkRunTP: three independent TP systems, all run every tick.
+</div>
+</div>
+
+<!-- ② Grid Systems -->
+<div id="tab-grid" class="panel">
+<div class="mermaid">
+flowchart TD
+    subgraph M1["🔵 M1 — BUY Grid (Magic 1111)"]
+      direction TB
+      E1{En1 = true?}
+      TS1{Trigger stopped\nM1?}
+      CT1{cnt >= MaxGrid1?}
+      FE1{cnt == 0?}
+      SP1{Spread OK?}
+      NP1{Near price\nexists GS1?}
+      MV1{|ask - gLastBuy|\n>= GS1 pts?}
+      OB1["Open BUY\nLot = Lot1 × LotMult1^cnt\ngLastBuy = ask"]
+      SKIP1(["Skip"])
+
+      E1 -->|No| SKIP1
+      E1 -->|Yes| TS1
+      TS1 -->|Yes - blocked| SKIP1
+      TS1 -->|No| CT1
+      CT1 -->|Full| SKIP1
+      CT1 -->|Space| FE1
+      FE1 -->|Yes - first entry| SP1
+      FE1 -->|No| MV1
+      MV1 -->|No| SKIP1
+      MV1 -->|Yes| SP1
+      SP1 -->|No| SKIP1
+      SP1 -->|Yes| NP1
+      NP1 -->|Yes| SKIP1
+      NP1 -->|No| OB1
+    end
+
+    subgraph M3["🟠 M3 — SELL Grid (Magic 3333)"]
+      direction TB
+      E3{En3 = true?}
+      TS3{Trigger stopped\nM3?}
+      CT3{cnt >= MaxGrid3?}
+      FE3{cnt == 0?}
+      SP3{Spread OK?}
+      NP3{Near price\nexists GS3?}
+      MV3{|bid - gLastSell|\n>= GS3 pts?}
+      OS3["Open SELL\nLot = Lot3 × LotMult3^cnt\ngLastSell = bid"]
+      SKIP3(["Skip"])
+
+      E3 -->|No| SKIP3
+      E3 -->|Yes| TS3
+      TS3 -->|Yes - blocked| SKIP3
+      TS3 -->|No| CT3
+      CT3 -->|Full| SKIP3
+      CT3 -->|Space| FE3
+      FE3 -->|Yes - first entry| SP3
+      FE3 -->|No| MV3
+      MV3 -->|No| SKIP3
+      MV3 -->|Yes| SP3
+      SP3 -->|No| SKIP3
+      SP3 -->|Yes| NP3
+      NP3 -->|Yes| SKIP3
+      NP3 -->|No| OS3
+    end
+
+    subgraph M2["🟣 M2 — ADX / Trigger Assist (Magic 2222)"]
+      direction TB
+      E2{En2 = true?}
+      TRIGACT{Trigger active?}
+      ADX2{gADXDir != 0?}
+      CHKDIR{Existing M2\nwrong direction?}
+      CT2{cnt >= MaxGrid2?}
+      SP2{Spread OK?}
+      OM2["Open BUY or SELL\nLot = Lot2 × LotMult2^cnt"]
+      CM2["Close all M2\n(direction change)"]
+      SKIP2(["Skip"])
+
+      E2 -->|No| SKIP2
+      E2 -->|Yes| TRIGACT
+      TRIGACT -->|Yes| CHKDIR
+      TRIGACT -->|No| ADX2
+      ADX2 -->|dir=0 flat| SKIP2
+      ADX2 -->|dir±1| CHKDIR
+      CHKDIR -->|Mismatch| CM2
+      CHKDIR -->|Match| CT2
+      CT2 -->|Full| SKIP2
+      CT2 -->|Space| SP2
+      SP2 -->|No| SKIP2
+      SP2 -->|Yes| OM2
+    end
+
+    classDef note fill:#0f1830,stroke:#2040a0
+</div>
+
+<div class="note">
+  <b>M1:</b> Bidirectional BUY grid — adds position whenever price moves GS1 pts in ANY direction from last open.<br>
+  <b>M3:</b> Bidirectional SELL grid — same logic but SELL direction.<br>
+  <b>M2:</b> Single-direction; reverses completely when ADX changes or trigger redirects. No multiplied lot by default.
+</div>
+</div>
+
+<!-- ③ Loss Trigger -->
+<div id="tab-trigger" class="panel">
+<div class="mermaid">
+flowchart TD
+    CT["ChkTrigger()"]
+
+    subgraph INACTIVE["State: NOT Active"]
+      COOL{TimeCurrent\n< gTrigCoolEnd?}
+      CHK1{En1 && Count M1 > 0\nPNL(M1) <= -LossTrig1?}
+      CHK3{En3 && Count M3 > 0\nPNL(M3) <= -LossTrig3?}
+      ARM1["ARM TRIGGER\ngTrig.active = true\nstoppedMagic = M1\ntrigPrice = current Bid\nClose all M2"]
+      ARM3["ARM TRIGGER\ngTrig.active = true\nstoppedMagic = M3\ntrigPrice = current Ask\nClose all M2"]
+      WAIT(["⏳ Wait cooldown"])
+      IDLE(["✅ Normal"])
+    end
+
+    subgraph ACTIVE["State: ACTIVE"]
+      CHK_REC{PNL(stoppedMagic)\n>= 0 ?}
+      RECOVER["DISARM TRIGGER\ngTrig.active = false\nstoppedMagic = 0\ntrigCoolEnd = now + TrigCoolSec\nClose all M2"]
+      HOLD(["🔴 Hold — grid blocked\nM2 assisting opposite"])
+    end
+
+    subgraph EFFECTS["Effect on Other Systems"]
+      direction LR
+      EG["Grid Effect\nM1 stopped → ChkGrid1 skips\nM3 stopped → ChkGrid3 skips"]
+      EM2["M2 Effect\nM1 stopped → M2 SELLS\nM3 stopped → M2 BUYS"]
+    end
+
+    CT --> INACTIVE
+    COOL -->|Yes| WAIT
+    COOL -->|No| CHK1
+    CHK1 -->|Yes| ARM1
+    CHK1 -->|No| CHK3
+    CHK3 -->|Yes| ARM3
+    CHK3 -->|No| IDLE
+    CT --> ACTIVE
+    CHK_REC -->|Yes| RECOVER
+    CHK_REC -->|No| HOLD
+    ARM1 & ARM3 & RECOVER --> EFFECTS
+</div>
+
+<div class="note">
+  <b>Arm condition:</b> Magic's total floating PNL drops below -LossTrig threshold.<br>
+  <b>Disarm condition:</b> The same magic's PNL recovers to >= 0 (back to breakeven).<br>
+  <b>Cooldown:</b> After disarm, TrigCoolSec delay before re-arm is allowed.<br>
+  <b>Key:</b> Trigger does NOT force-close M1/M3 positions — only blocks new entries and redirects M2.
+</div>
+</div>
+
+<!-- ④ Runner System -->
+<div id="tab-runner" class="panel">
+<div class="mermaid">
+flowchart TD
+    UR["UpdateRunners()\n— called every tick before TP —"]
+
+    subgraph R1["M1 Runner (gRunTk1)"]
+      direction TB
+      RK1{RunKeepN1 > 0\n&& En1?}
+      GP1["GetBestProfit(M1, RunKeepN1)\nskipRun=false\nGet top N profitable M1 BUYs"]
+      ST1["gRunTk1 = those tickets\nn = actual count found"]
+      CHK_N1{n >= RunKeepN1?}
+      BE1["ApplyBESL(each runner, RunBEPts)\nSL = open + RunBEPts pts\n(profit lock direction)"]
+      CLR1["gRunTk1 = empty\n(no runners)"]
+    end
+
+    subgraph R3["M3 Runner (gRunTk3)"]
+      direction TB
+      RK3{RunKeepN3 > 0\n&& En3?}
+      GP3["GetBestProfit(M3, RunKeepN3)\nskipRun=false\nGet top N profitable M3 SELLs"]
+      ST3["gRunTk3 = those tickets"]
+      CHK_N3{n >= RunKeepN3?}
+      BE3["ApplyBESL(each runner, RunBEPts)\nSL = open - RunBEPts pts"]
+      CLR3["gRunTk3 = empty"]
+    end
+
+    subgraph RUNTP["ChkRunTP() — separate TP for runners"]
+      direction TB
+      RPNL1["Sum PNL of gRunTk1"]
+      RCMP1{rPNL >= TPRun1?}
+      RCLOSE1["Close all gRunTk1"]
+      RPNL3["Sum PNL of gRunTk3"]
+      RCMP3{rPNL >= TPRun3?}
+      RCLOSE3["Close all gRunTk3"]
+    end
+
+    subgraph RUNNER_EFFECT["Runner Effect on TP System"]
+      RE1["IsRunner(tk) = true\n→ EXCLUDED from:\n  • GetCloseableGP()\n  • DoTP/DoTPMulti winners\n  • ChkTPAll\nRunners only close via ChkRunTP"]
+    end
+
+    UR --> R1 & R3
+    RK1 -->|No| CLR1
+    RK1 -->|Yes| GP1 --> ST1 --> CHK_N1
+    CHK_N1 -->|Full set| BE1
+    CHK_N1 -->|Partial - no BE| RE1
+    RK3 -->|No| CLR3
+    RK3 -->|Yes| GP3 --> ST3 --> CHK_N3
+    CHK_N3 -->|Full set| BE3
+    BE1 & BE3 --> RE1
+    RE1 --> RUNTP
+    RPNL1 --> RCMP1 -->|Yes| RCLOSE1
+    RPNL3 --> RCMP3 -->|Yes| RCLOSE3
+
+    classDef warn fill:#1a1020,stroke:#8030a0
+</div>
+
+<div class="note">
+  <b>Runner concept:</b> Top N most-profitable positions per magic are "protected" from regular TP — they run further.<br>
+  <b>BE SL:</b> Applied when full RunKeepN set exists. BUY runner: SL above open. SELL runner: SL below open.<br>
+  <b>Separate TP:</b> Runners close only when their combined PNL >= TPRun1/TPRun3.<br>
+  <b>Warning:</b> Runner designation refreshes every tick — if price reverses, a former runner is no longer a runner.
+</div>
+</div>
+
+<!-- ⑤ TP Hierarchy -->
+<div id="tab-tp" class="panel">
+<div class="mermaid">
+flowchart TD
+    CHKALL["ChkAllTP()\n— Priority Dispatcher —"]
+    CHKTPALL["ChkTPAll()\n— Portfolio TP —"]
+    CHKRUN["ChkRunTP()\n— Runner TP —"]
+
+    subgraph P1["🥇 Priority 1 — TotTP"]
+      direction TB
+      UT{UseTotTP?}
+      TCGP["Compute:\ncgp1+cgp2+cgp3"]
+      TCHECK{combined CGP\n>= TPTot?}
+      TMULTI["DoTPMulti([M1,M2,M3], TPTot)\nAbsorb losers globally\nClose winners all 3 magics"]
+      T_FIRED(["✅ Return — done"])
+    end
+
+    subgraph P2["🥈 Priority 2 — PairTP"]
+      direction TB
+      UP{UsePairTP?}
+      PPAIRS["Check 3 combos:\nM1+M2 | M1+M3 | M2+M3"]
+      PBEST["Select pair with highest\ncombined CGP >= TPPair"]
+      PCHECK{Any pair\n>= TPPair?}
+      PMULTI["DoTPMulti([bestA, bestB], TPPair)"]
+      P_FIRED(["✅ Return — done"])
+    end
+
+    subgraph P3["🥉 Priority 3 — SepTP"]
+      direction TB
+      US{UseSepTP?}
+      TP1X["DoTP(M1, TP1)\nif En1 && cnt>0"]
+      TP2X["DoTP(M2, TP2)\nif En2 && cnt>0"]
+      TP3X["DoTP(M3, TP3)\nif En3 && cnt>0"]
+    end
+
+    subgraph PA["📦 Portfolio TP — TPAll"]
+      direction TB
+      UTA{UseTPAll?}
+      ACGP["combined CGP\n(all 3 magics)"]
+      ACHECK{CGP >= TPAll?}
+      AABSORB["Absorption loop\n(global losers)"]
+      ACLOSE["Close all non-runner\nwinners (all 3 magics)"]
+      A_FIRED(["✅ Done"])
+    end
+
+    subgraph PR["🏃 Runner TP — TPRun"]
+      direction TB
+      R1X["M1 runners sum PNL\n>= TPRun1 → close all"]
+      R3X["M3 runners sum PNL\n>= TPRun3 → close all"]
+    end
+
+    CHKALL --> P1 & P2 & P3
+    UT -->|No| P2
+    UT -->|Yes| TCGP --> TCHECK
+    TCHECK -->|No| P2
+    TCHECK -->|Yes| TMULTI --> T_FIRED
+
+    UP -->|No| P3
+    UP -->|Yes| PPAIRS --> PBEST --> PCHECK
+    PCHECK -->|No| P3
+    PCHECK -->|Yes| PMULTI --> P_FIRED
+
+    US -->|No| DONE1(["Done"])
+    US -->|Yes| TP1X & TP2X & TP3X
+
+    CHKTPALL --> PA
+    UTA -->|No| NONE1(["Skip"])
+    UTA -->|Yes| ACGP --> ACHECK
+    ACHECK -->|No| NONE1
+    ACHECK -->|Yes| AABSORB --> ACLOSE --> A_FIRED
+
+    CHKRUN --> PR
+
+    classDef p1 fill:#1a2a10,stroke:#40a030
+    classDef p2 fill:#1a1a30,stroke:#4040c0
+    classDef p3 fill:#2a1a10,stroke:#c06030
+</div>
+
+<div class="note">
+  <b>Critical rule:</b> TotTP fires → PairTP and SepTP do NOT run that tick.<br>
+  PairTP fires → SepTP does NOT run.<br>
+  TPAll and RunTP run independently regardless of ChkAllTP result.<br>
+  <b>All 3 systems can fire the same tick:</b> ChkAllTP fires SepTP(M1), then ChkTPAll also fires, then RunTP fires.
+</div>
+<div class="note warn">
+  <b>⚠ Redesign Issue #1:</b> SepTP, TPAll, RunTP can all fire on the same tick independently.
+  If SepTP(M1) closes M1 winners, then TPAll also tries to close remaining M1 positions, then RunTP closes runners —
+  3 sequential closes in one tick can create unintended outcomes.<br><br>
+  <b>⚠ Redesign Issue #2:</b> ChkAllTP returns after first fired priority, but ChkTPAll and ChkRunTP still run.
+  Consider: if TotTP fires, should TPAll be skipped that tick?
+</div>
+</div>
+
+<!-- ⑥ DoTP Core Logic -->
+<div id="tab-dotp" class="panel">
+<div class="mermaid">
+flowchart TD
+    subgraph GP_CALC["Step 1 — Compute closeableGP"]
+      direction TB
+      BP["GetBestProfit(magic, 999)\nskipRun=true\nExcludes runner positions\nSorted: best profit first"]
+      SURV["Winners array: [W0, W1, W2, ... Wn]\n[---- SKCount survivors ----][--- closeable ---]"]
+      CGP_SUM["closeableGP = sum(W_SKCount .. W_n)"]
+      CGP_CHK{CGP >= req?}
+      REJECT(["❌ Return false\nDo nothing"])
+    end
+
+    subgraph ABSORB["Step 2 — Absorption Loop"]
+      direction TB
+      WL["GetWorstLoss(magic, 9999)\nSorted: worst loss first\n[L0=-$217, L1=-$164, L2=-$137 ...]"]
+      CAP["cap = AbsorbN>0 ? min(AbsorbN,nL) : nL"]
+      LOOP["For i = 0 to cap:\n  d = runLoss + |L_i|\n  if CGP < req + d → BREAK\n  else absorb: runLoss += |L_i|, absN++"]
+      SAFETY_NOTE["Safety guarantee:\n  CGP - absorbed_loss >= req\n  Realized net >= req always"]
+    end
+
+    subgraph EXEC["Step 3 — Execute"]
+      direction TB
+      CL["Close absorbed losers\n(worst first: L0 .. L_absN-1)"]
+      CW["Close closeable winners\n(W_SKCount .. W_n)"]
+      BESL["Apply BE SL to SKCount survivors\n(W0 .. W_SKCount-1)\nSL = open ± SKBEPts pts"]
+    end
+
+    subgraph MULTI["DoTPMulti — Same logic, Multiple Magics"]
+      direction TB
+      MM1["CGP = sum GetCloseableGP(each magic)"]
+      MM2["Losers = merge GetWorstLoss(each magic)\nSort globally: worst-first across all"]
+      MM3["Absorption loop: same safety check"]
+      MM4["Execute: close losers → per-magic close winners → BE SL survivors"]
+    end
+
+    BP --> SURV --> CGP_SUM --> CGP_CHK
+    CGP_CHK -->|No| REJECT
+    CGP_CHK -->|Yes| WL
+    WL --> CAP --> LOOP --> SAFETY_NOTE
+    SAFETY_NOTE --> CL --> CW --> BESL
+
+    MULTI --> MM1 --> MM2 --> MM3 --> MM4
+
+    classDef safe fill:#0a1a0a,stroke:#30c060
+    classDef key fill:#0a1030,stroke:#3060c0
+    class SAFETY_NOTE safe
+    class SURV key
+</div>
+
+<div class="note">
+  <b>Key insight:</b> GetBestProfit returns winners sorted best→worst. SKCount top winners become "survivors" (get BE SL).
+  Only winners ranked SKCount onward are "closeable".<br><br>
+  <b>Absorption safety:</b> Each step of absorption checks: CGP must still cover (req + total_absorbed_so_far + next_loser).
+  If any single loser is too large, the loop breaks — that loser stays open for the next TP round.<br><br>
+  <b>AbsorbN=0:</b> Try to absorb ALL affordable losers. <b>AbsorbN=N:</b> Cap at N per round (gradual reduction strategy).
+</div>
+</div>
+
+<!-- ⑦ Redesign Proposal -->
+<div id="tab-redesign" class="panel">
+
+<div class="note warn">
+  <b>⚠ Current Architecture Issues Found:</b>
+</div>
+
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px">
+<tr style="background:#0f1830;color:#6a90c8">
+  <th style="padding:10px;border:1px solid #1a2848;text-align:left">#</th>
+  <th style="padding:10px;border:1px solid #1a2848;text-align:left">Issue</th>
+  <th style="padding:10px;border:1px solid #1a2848;text-align:left">Risk</th>
+  <th style="padding:10px;border:1px solid #1a2848;text-align:left">Fix</th>
+</tr>
+<tr style="background:#0a0d1e">
+  <td style="padding:10px;border:1px solid #1a2848;color:#ff8080">1</td>
+  <td style="padding:10px;border:1px solid #1a2848">ChkAllTP + ChkTPAll + ChkRunTP all fire same tick independently</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#ff8080">Triple close in one tick — unexpected behavior</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#60e890">Use single bool: if(ChkAllTP()) return; prevents TPAll from double-closing</td>
+</tr>
+<tr style="background:#0c1020">
+  <td style="padding:10px;border:1px solid #1a2848;color:#ff8080">2</td>
+  <td style="padding:10px;border:1px solid #1a2848">SepTP closes M1, M2, M3 all in same call (sequential)</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#ffa060">If M1 TP fires and closes M1 winners, M2 TP also checks independently</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#60e890">No real problem here — each is independent DoTP with its own CGP check</td>
+</tr>
+<tr style="background:#0a0d1e">
+  <td style="padding:10px;border:1px solid #1a2848;color:#ffa060">3</td>
+  <td style="padding:10px;border:1px solid #1a2848">UpdateRunners refreshes every tick — runners change dynamically</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#ffa060">A runner in gRunTk1 now may not be a runner next tick if better one appears</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#a0c0e8">Consider: once designated, keep runner until its SL is hit or RunTP fires</td>
+</tr>
+<tr style="background:#0c1020">
+  <td style="padding:10px;border:1px solid #1a2848;color:#ffa060">4</td>
+  <td style="padding:10px;border:1px solid #1a2848">RunTP fires independently — doesn't coordinate with ChkAllTP</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#ffa060">ChkAllTP fires, closes regular positions; RunTP also fires same tick, closes runners</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#60e890">Minor — runners are separate pool. Generally OK.</td>
+</tr>
+<tr style="background:#0a0d1e">
+  <td style="padding:10px;border:1px solid #1a2848;color:#ff8080">5</td>
+  <td style="padding:10px;border:1px solid #1a2848">AbsorbN=0 absorbs ALL affordable losers in one round</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#ff8080">Can wipe out large loser pile if CGP is large — sudden large realized loss even if net positive</td>
+  <td style="padding:10px;border:1px solid #1a2848;color:#60e890">Recommend: set AbsorbN=1-3 for controlled reduction. User controls via input.</td>
+</tr>
+</table>
+
+<div class="mermaid">
+flowchart TD
+    subgraph PROPOSED["🔄 PROPOSED: Unified TP Priority System"]
+      direction TB
+      T1["OnTick()"]
+      T2["UpdateRunners()"]
+      T3["ChkAllGrids()"]
+
+      subgraph TP_UNIFIED["ChkTPAll_Unified() — Single Entry Point"]
+        direction TB
+        PF1{TotTP CGP\n>= TPTot?}
+        PF2{Best PairTP CGP\n>= TPPair?}
+        PF3{Any SepTP CGP\n>= TP_x?}
+        PF4{Portfolio CGP\n>= TPAll?}
+
+        DO1["DoTPMulti(M1+M2+M3)\n✅ return FIRED"]
+        DO2["DoTPMulti(best pair)\n✅ return FIRED"]
+        DO3["DoTP(each magic)\n✅ return FIRED"]
+        DO4["DoTPAll()\n✅ return FIRED"]
+        NONE(["No TP fires this tick"])
+
+        PF1 -->|Yes| DO1
+        PF1 -->|No| PF2
+        PF2 -->|Yes| DO2
+        PF2 -->|No| PF3
+        PF3 -->|Yes| DO3
+        PF3 -->|No| PF4
+        PF4 -->|Yes| DO4
+        PF4 -->|No| NONE
+      end
+
+      T5["ChkRunTP()\n(always runs — runners are separate pool)"]
+      T6["ChkBPK()"]
+      T7["ShowDashboard()"]
+
+      T1 --> T2 --> T3 --> TP_UNIFIED --> T5 --> T6 --> T7
+    end
+
+    classDef new fill:#0a1a2a,stroke:#3080c0,color:#90c0e8
+</div>
+
+<div class="note ok">
+  <b>✅ Key Change in Proposed Design:</b><br>
+  TPAll becomes Priority 4 in the same priority chain — if TotTP/PairTP/SepTP already fired, TPAll is skipped.
+  Prevents "double close" scenario where both SepTP and TPAll fire on same tick.<br><br>
+  RunTP stays independent (different position pool — runners only close via their own TP target).<br><br>
+  <b>Priority chain:</b> TotTP → PairTP → SepTP → TPAll → skip<br>
+  Only ONE level fires per tick. Clear, predictable, safe.
+</div>
+
+<div class="note">
+  <b>Additional Recommendations:</b><br>
+  • <b>AbsorbN:</b> Default 1-2 (not 0). Controlled gradual reduction is safer than all-at-once.<br>
+  • <b>SKCount:</b> Set to 1-2 survivors per magic to lock profit and keep some exposure.<br>
+  • <b>RunKeepN:</b> Consider "sticky runners" — once designated, keep until SL hit (not re-evaluated every tick).<br>
+  • <b>TPPair threshold:</b> Should be higher than SepTP max — otherwise PairTP never triggers (SepTP fires first).<br>
+  • <b>TPTot threshold:</b> Should be > TPPair which should be > max(TP1,TP2,TP3).
+</div>
+</div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1a2848', primaryTextColor: '#b0c8e8',
+      primaryBorderColor: '#3060c0', lineColor: '#4060a0',
+      secondaryColor: '#0f1530', tertiaryColor: '#0a0d20',
+      edgeLabelBackground: '#0a0d20', background: '#080a18'
+    }
+  });
+  function show(id) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-'+id).classList.add('active');
+    event.target.classList.add('active');
+  }
+</script>
+</body>
+</html>

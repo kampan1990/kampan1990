@@ -250,7 +250,7 @@ int GetWorstLoss(int m, int maxN, ulong &outTk[], double &outPf[]) {
       if(pp >= 0) continue;
       tk[c] = t; pf[c] = pp; c++;
    }
-   SortPairsByPnl(tk, pf, c, true);
+   SortPairsByPnl(tk, pf, c, false); // descending PnL = smallest absolute loss first → more full closes
    int n = MathMin(c, maxN);
    ArrayResize(outTk, n); ArrayResize(outPf, n);
    for(int i = 0; i < n; i++) { outTk[i] = tk[i]; outPf[i] = pf[i]; }
@@ -318,8 +318,8 @@ void AbsorbLosers(ulong &lTk[], double &lPf[], int totalL, double budget, int ma
          double vol   = PositionGetDouble(POSITION_VOLUME);
          double ratio = budget / lossAmt;
          double pLot  = MathFloor(ratio * vol / lotStep) * lotStep;
-         if(pLot >= minLot) PartialClose(lTk[i], pLot);
-         break;
+         if(pLot >= minLot) { PartialClose(lTk[i], pLot); break; } // budget used up
+         // pLot < minLot: position too large for partial close with this budget → try next
       }
    }
 }

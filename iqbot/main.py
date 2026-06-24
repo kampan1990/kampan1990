@@ -18,7 +18,7 @@ import config
 from browser import BrowserManager
 from logger import log_trade, update_trade_result
 from risk_manager import RiskManager
-from strategy import RsiEmaStrategy
+from strategy import RsiEmaStrategy, AIStrategy
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -79,13 +79,30 @@ async def run() -> None:
     browser = BrowserManager(headless=config.HEADLESS)
     await browser.start()
 
-    strategy = RsiEmaStrategy(
-        rsi_period=config.RSI_PERIOD,
-        rsi_overbought=config.RSI_OVERBOUGHT,
-        rsi_oversold=config.RSI_OVERSOLD,
-        ema_short=config.EMA_SHORT,
-        ema_long=config.EMA_LONG,
-    )
+    if config.STRATEGY_MODE == "ai":
+        log.info("Strategy: AI (Claude) with BB + MACD + RSI + EMA")
+        strategy = AIStrategy(
+            asset=asset,
+            trade_type=config.TRADE_TYPE,
+            rsi_period=config.RSI_PERIOD,
+            ema_short=config.EMA_SHORT,
+            ema_long=config.EMA_LONG,
+            bb_period=config.BB_PERIOD,
+            bb_std=config.BB_STD,
+            macd_fast=config.MACD_FAST,
+            macd_slow=config.MACD_SLOW,
+            macd_signal=config.MACD_SIGNAL,
+            min_confidence=config.AI_MIN_CONFIDENCE,
+        )
+    else:
+        log.info("Strategy: Classic RSI + EMA crossover")
+        strategy = RsiEmaStrategy(
+            rsi_period=config.RSI_PERIOD,
+            rsi_overbought=config.RSI_OVERBOUGHT,
+            rsi_oversold=config.RSI_OVERSOLD,
+            ema_short=config.EMA_SHORT,
+            ema_long=config.EMA_LONG,
+        )
     risk = RiskManager(
         max_loss=config.MAX_LOSS_SESSION,
         max_trades=config.MAX_TRADES,
